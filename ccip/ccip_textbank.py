@@ -55,11 +55,11 @@ DA_TEXTS = {
 
 # PR_TEXTS: Practical Recommendations text (all dimensions)
 PR_TEXTS = {
-    "DT": "Practise concise "what–why–next" framing in meetings to improve clarity and focus.\nSeek regular feedback on the clarity of both written and verbal messages to identify blind spots.\nRole-play challenging conversations with a mentor or coach to build skill and confidence under pressure.",
+    "DT": 'Practise concise "what–why–next" framing in meetings to improve clarity and focus.\nSeek regular feedback on the clarity of both written and verbal messages to identify blind spots.\nRole-play challenging conversations with a mentor or coach to build skill and confidence under pressure.',
     "TR": "Schedule brief relationship-building check-ins during busy projects to strengthen trust without losing momentum.\nBalance meeting agendas to include both task updates and discussions about team well-being and collaboration.\nReflect weekly on recent interactions to ensure neither task completion nor relationship maintenance is being overlooked.",
     "CO": "Use the S.C.O.P.E. Feedforward Model™ or similar forward-facing methods to reframe conflicts as shared problem-solving opportunities.\nDebrief conflicts quickly and constructively to capture lessons and prevent repetition without assigning blame.\nPractise early, low-stakes conflict conversations, starting with minor disagreements to build confidence and reduce escalation.",
     "CA": "Before key meetings, research the cultural norms and communication preferences of stakeholders or teams you'll engage with.\nObserve and adapt to subtle verbal and non-verbal cues in new settings, adjusting style to maintain inclusivity.\nSeek regular cross-cultural experiences or mentorship (e.g., international projects, diverse team collaborations) to broaden adaptive range.",
-    "EP": "Pause to paraphrase others' viewpoints before responding, ensuring their perspective is accurately understood.\nPractise a "day-in-the-life" reflection, imagining issues from a colleague's or stakeholder's perspective to build deeper empathy.\nAsk open-ended, curiosity-driven questions in meetings to surface perspectives that might otherwise remain hidden."
+    "EP": 'Pause to paraphrase others\' viewpoints before responding, ensuring their perspective is accurately understood.\nPractise a "day-in-the-life" reflection, imagining issues from a colleague\'s or stakeholder\'s perspective to build deeper empathy.\nAsk open-ended, curiosity-driven questions in meetings to surface perspectives that might otherwise remain hidden.'
 }
 
 def validate_textbank():
