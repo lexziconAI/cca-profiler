@@ -211,52 +211,55 @@ def detect_survey_columns(df: pd.DataFrame) -> Tuple[Optional[int], Optional[int
 
 def parse_likert_response(value) -> Optional[int]:
     """
-    Parse Likert scale response to numeric value (1-7).
-    Handles various text formats and numeric values.
+    STRICT 5-point Likert parser: returns 1..5 or None.
+    Accepts numeric 1..5, or text variants:
+      strongly disagree=1, disagree=2, neutral/neither agree nor disagree=3,
+      agree=4, strongly agree=5
+    Rejects any 6/7 and any 'somewhat' phrases by raising ValueError.
     """
     if pd.isna(value):
         return None
-    
-    # If already numeric
+
+    # Numeric
     if isinstance(value, (int, float)):
         val = int(value)
-        if 1 <= val <= 7:
+        if 1 <= val <= 5:
             return val
+        if val in (6, 7):
+            raise ValueError("Found 6/7 or 'somewhat' but this survey uses a 5-point Likert scale.")
         return None
-    
-    # Convert to string and process
-    val_str = str(value).strip().lower()
-    
-    # Direct numeric strings
-    if val_str in ['1', '2', '3', '4', '5', '6', '7']:
-        return int(val_str)
-    
-    # Text mappings
-    text_map = {
-        'strongly disagree': 1,
-        'stronglydisagree': 1,
-        'disagree': 2,
-        'somewhat disagree': 3,
-        'somewhatdisagree': 3,
-        'neutral': 4,
-        'neither agree nor disagree': 4,
-        'somewhat agree': 5,
-        'somewhatagree': 5,
-        'agree': 6,
-        'strongly agree': 7,
-        'stronglyagree': 7
-    }
-    
-    for key, value in text_map.items():
-        if key in val_str:
-            return value
-    
+
+    s = str(value).strip().lower()
+
+    # Numeric strings
+    if s in {"1","2","3","4","5"}:
+        return int(s)
+    if s in {"6","7"}:
+        raise ValueError("Found 6/7 or 'somewhat' but this survey uses a 5-point Likert scale.")
+
+    # Reject any 'somewhat'
+    if "somewhat" in s:
+        raise ValueError("Found 6/7 or 'somewhat' but this survey uses a 5-point Likert scale.")
+
+    # Text map (tolerant) - order matters, longer phrases first
+    text_map = [
+        ("neither agree nor disagree", 3),
+        ("strongly disagree", 1),
+        ("strongly agree", 5),
+        ("disagree", 2),
+        ("agree", 4),
+        ("neutral", 3),
+    ]
+    for key, val in text_map:
+        if key in s:
+            return val
+
     return None
 
 
 def reverse_score(value: int) -> int:
-    """Reverse score a Likert item (1-7 scale)."""
-    return 8 - value
+    """Reverse score a Likert item (1-5 scale)."""
+    return 6 - value
 
 
 def calculate_dimension_scores(responses: List[Optional[int]]) -> Dict[str, float]:

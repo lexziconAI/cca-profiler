@@ -120,6 +120,14 @@ Deploy to any Docker-compatible platform:
 
 The Dockerfile includes all necessary system dependencies for CairoSVG.
 
+## Scale & Inputs
+
+This tool strictly uses a **5-point Likert** scale. Inputs may be numeric (1..5) or text:
+- Strongly Disagree=1, Disagree=2, Neutral/Neither Agree nor Disagree=3, Agree=4, Strongly Agree=5.
+
+Any 6/7 responses or phrases like "somewhat agree/disagree" are rejected.
+Values are averaged per dimension and then mapped from **1..5 → 0..5** for reporting (radar, banding, summaries).
+
 ## License
 
 [Your License Here]

@@ -41,6 +41,33 @@ CCA emphasises staying consciously aware of your cultural surroundings, noticing
 While not a psychometric assessment, the CCA Profiler draws on established, research-backed frameworks in organisational psychology, intercultural communication, and leadership studies.
 """)
 
+with st.expander("Survey scale & instructions"):
+    st.markdown("""
+**Communication & Culture Advantage Profiler**
+
+This profiler—which will require 5 to 7 minutes of your time to complete—is designed to help you reflect on your personal communication style, your adaptability across cultures, and the way you use empathy in workplace conversations.
+
+The CCAP is not a test – there are no right or wrong answers. Instead, this tool will bolster your self-awareness of communication skills in diverse and international contexts.
+
+When submitting this form, be sure to insert information (such as your **Name** and **Email Address**) you wish the system to record and retain – this is used to create your Personal Communication Profile, issued to you prior to your workshop attendance or coaching sessions.
+
+**Instructions**
+Read each statement carefully and select the option that best reflects how true it is for you.
+
+**Use the following 5-point scale:**
+1 = Strongly Disagree
+2 = Disagree
+3 = Neutral
+4 = Agree
+5 = Strongly Agree
+
+**Time required:** 5–7 minutes.
+
+Your responses will be combined into an anonymous communication snapshot that we will explore together during the workshop. Your results will not be shared with anyone.
+
+When you submit this form, it will not automatically collect your details like name and email address unless you provide it yourself.
+""")
+
 # File upload
 uploaded = st.file_uploader(
     "Upload survey data (Excel/CSV)",

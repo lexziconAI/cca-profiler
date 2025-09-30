@@ -50,8 +50,9 @@ DIMENSION_LABELS = {
 }
 
 # Scoring scale conversion helpers
-def _to_0_5_from_1_7(x: float) -> float:
-    return (float(x) - 1.0) * (5.0 / 6.0)
+def _to_0_5_from_1_5(x: float) -> float:
+    # map 1→0.0, 3→2.5, 5→5.0
+    return (float(x) - 1.0) * 1.25
 
 def _clamp_0_5(x: float) -> float:
     x = float(x)
@@ -63,7 +64,7 @@ def _scale_and_clamp_scores_0_5(scores: Dict[str, float]) -> Dict[str, float]:
         if v is None:
             out[k] = None
         else:
-            out[k] = _clamp_0_5(_to_0_5_from_1_7(v))
+            out[k] = _clamp_0_5(_to_0_5_from_1_5(v))
     return out
 
 # Band thresholds
@@ -552,10 +553,10 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
             
             # Process survey responses
             processed = process_survey_row(row, start_idx, end_idx)
-            scores_raw_1_7 = processed['scores']
-            if not any(v is not None for v in scores_raw_1_7.values()):
+            scores_raw_1_5 = processed['scores']
+            if not any(v is not None for v in scores_raw_1_5.values()):
                 continue
-            scores = _scale_and_clamp_scores_0_5(scores_raw_1_7)
+            scores = _scale_and_clamp_scores_0_5(scores_raw_1_5)
             # guard
             for dim in ["DT","TR","CO","CA","EP"]:
                 s = scores.get(dim)
@@ -687,10 +688,10 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
                 # Reprocess this row to get KS/DA/PR items with icon keys
                 row = survey_df.iloc[row_idx]
                 processed = process_survey_row(row, start_idx, end_idx)
-                scores_raw_1_7 = processed['scores']
-                if not any(v is not None for v in scores_raw_1_7.values()):
+                scores_raw_1_5 = processed['scores']
+                if not any(v is not None for v in scores_raw_1_5.values()):
                     continue
-                scores = _scale_and_clamp_scores_0_5(scores_raw_1_7)
+                scores = _scale_and_clamp_scores_0_5(scores_raw_1_5)
                 # guard
                 for dim in ["DT","TR","CO","CA","EP"]:
                     s = scores.get(dim)
