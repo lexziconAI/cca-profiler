@@ -1,6 +1,7 @@
 """Main composition logic and constants for CCIP report generation."""
 
 import logging
+import re
 import tempfile
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -83,43 +84,43 @@ KS_PLACEHOLDER_BODY = "Your profile shows balanced capabilities across multiple 
 DA_PLACEHOLDER_TITLE = "Maintain your balanced approach"
 DA_PLACEHOLDER_BODY = "Your scores indicate well-developed capabilities across the measured dimensions.\nContinue to refine your skills through deliberate practice and feedback.\nStay curious about how different contexts might require adjusted approaches."
 
-# Score interpretations
+# Dimension-specific short interpretations by band (0–5 scale)
 SCORE_INTERP = {
-    "DT": {
-        "Low / Limited": "Often unclear or indirect, leading to misunderstandings and reduced trust. High-priority development to improve organisational alignment and results.",
-        "Developing": "Sometimes avoids or softens key messages, creating ambiguity or delayed action. Needs deliberate practice in clear, constructive communication while maintaining respect.",
-        "Moderate / Balanced": "Demonstrates clear communication in familiar contexts but may adapt inconsistently across diverse settings. A solid base to build stronger clarity and consistency.",
-        "High": "Speaks clearly and transparently in most situations, usually balancing directness with cultural sensitivity. Minor inconsistencies may appear under pressure but rarely impact understanding.",
-        "Very High": "Communicates expectations and feedback with exceptional clarity and honesty while remaining sensitive to cultural norms. Consistently sets a standard for open, trust-building dialogue."
+    'DT': {
+        'Very High': 'Communicates expectations and feedback with exceptional clarity and honesty while remaining sensitive to cultural norms. Consistently sets a standard for open, trust-building dialogue.',
+        'High': 'Speaks clearly and transparently in most situations, usually balancing directness with cultural sensitivity. Minor inconsistencies may appear under pressure but rarely impact understanding.',
+        'Moderate / Balanced': 'Demonstrates clear communication in familiar contexts but may adapt inconsistently across diverse settings. A solid base to build stronger clarity and consistency.',
+        'Developing': 'Sometimes avoids or softens key messages, creating ambiguity or delayed action. Needs deliberate practice in clear, constructive communication while maintaining respect.',
+        'Low / Limited': 'Often unclear or indirect, leading to misunderstandings and reduced trust. High-priority development to improve organisational alignment and results.',
     },
-    "TR": {
-        "Low / Limited": "Strongly biased toward task or relationship focus, often undermining either performance or trust. Immediate attention needed to rebalance.",
-        "Developing": "Tends to favour either deadlines or harmony, causing friction or missed opportunities. Needs targeted practice in adjusting focus to context.",
-        "Moderate / Balanced": "Handles tasks and relationships fairly well but may default to one side under stress. A good platform for conscious flexibility.",
-        "High": "Regularly integrates task focus and relationship-building, with only minor leanings toward one side depending on context.",
-        "Very High": "Seamlessly balances getting results with nurturing relationships. Maintains efficiency while fostering strong trust and collaboration."
+    'TR': {
+        'Very High': 'Seamlessly balances getting results with nurturing relationships. Maintains efficiency while fostering strong trust and collaboration.',
+        'High': 'Regularly integrates task focus and relationship-building, with only minor leanings toward one side depending on context.',
+        'Moderate / Balanced': 'Handles tasks and relationships fairly well but may default to one side under stress. A good platform for conscious flexibility.',
+        'Developing': 'Tends to favour either deadlines or harmony, causing friction or missed opportunities. Needs targeted practice in adjusting focus to context.',
+        'Low / Limited': 'Strongly biased toward task or relationship focus, often undermining either performance or trust. Immediate attention needed to rebalance.',
     },
-    "CO": {
-        "Low / Limited": "Routinely avoids or mismanages conflict, creating ongoing friction or disengagement. Priority focus area for leadership growth.",
-        "Developing": "Often postpones or minimises conflict, leading to unresolved tension and lost opportunities for improvement.",
-        "Moderate / Balanced": "Handles some conflicts well but may avoid or delay others, allowing small issues to grow. Solid basis for strengthening proactive dialogue.",
-        "High": "Generally comfortable engaging in healthy conflict and resolving issues before they escalate; occasional hesitancy may surface in complex situations.",
-        "Very High": "Consistently addresses disagreements early and constructively, transforming tension into innovation and stronger collaboration."
+    'CO': {
+        'Very High': 'Consistently addresses disagreements early and constructively, transforming tension into innovation and stronger collaboration.',
+        'High': 'Generally comfortable engaging in healthy conflict and resolving issues before they escalate; occasional hesitancy may surface in complex situations.',
+        'Moderate / Balanced': 'Handles some conflicts well but may avoid or delay others, allowing small issues to grow. Solid basis for strengthening proactive dialogue.',
+        'Developing': 'Often postpones or minimises conflict, leading to unresolved tension and lost opportunities for improvement.',
+        'Low / Limited': 'Routinely avoids or mismanages conflict, creating ongoing friction or disengagement. Priority focus area for leadership growth.',
     },
-    "CA": {
-        "Low / Limited": "Rarely adjusts to cultural differences; may unintentionally create misunderstanding or exclusion. High-priority development.",
-        "Developing": "Often relies on default styles or assumptions, limiting success in diverse environments. Needs deliberate exposure and practice.",
-        "Moderate / Balanced": "Shows willingness to adapt but may revert to familiar norms in complex or unfamiliar cultural settings. Good foundation for broader adaptability.",
-        "High": "Comfortable adapting to most cultural situations, learning quickly and adjusting behaviour effectively, with only minor gaps.",
-        "Very High": "Rapidly reads cultural cues and flexes communication styles with ease, enabling seamless collaboration across geographies and teams."
+    'CA': {
+        'Very High': 'Rapidly reads cultural cues and flexes communication styles with ease, enabling seamless collaboration across geographies and teams.',
+        'High': 'Comfortable adapting to most cultural situations, learning quickly and adjusting behaviour effectively, with only minor gaps.',
+        'Moderate / Balanced': 'Shows willingness to adapt but may revert to familiar norms in complex or unfamiliar cultural settings. Good foundation for broader adaptability.',
+        'Developing': 'Often relies on default styles or assumptions, limiting success in diverse environments. Needs deliberate exposure and practice.',
+        'Low / Limited': 'Rarely adjusts to cultural differences; may unintentionally create misunderstanding or exclusion. High-priority development.',
     },
-    "EP": {
-        "Low / Limited": "Rarely considers others' experiences or perspectives, limiting trust and collaboration. Critical area for growth.",
-        "Developing": "Sometimes listens without fully integrating others' views, or focuses on tasks at the expense of relationships. Needs deliberate empathy-building practices.",
-        "Moderate / Balanced": "Shows understanding and concern for others in many situations, but may overlook perspectives when under pressure.",
-        "High": "Frequently shows empathy and perspective-taking, creating strong relationships and effective collaboration, with only occasional gaps.",
-        "Very High": "Consistently demonstrates deep empathy and integrates others' viewpoints into decision-making, strengthening trust and inclusion across teams."
-    }
+    'EP': {
+        'Very High': 'Consistently demonstrates deep empathy and integrates others\' viewpoints into decision-making, strengthening trust and inclusion across teams.',
+        'High': 'Frequently shows empathy and perspective-taking, creating strong relationships and effective collaboration, with only occasional gaps.',
+        'Moderate / Balanced': 'Shows understanding and concern for others in many situations, but may overlook perspectives when under pressure.',
+        'Developing': 'Sometimes listens without fully integrating others\' views, or focuses on tasks at the expense of relationships. Needs deliberate empathy-building practices.',
+        'Low / Limited': 'Rarely considers others\' experiences or perspectives, limiting trust and collaboration. Critical area for growth.',
+    },
 }
 
 # KS texts (pre-split)
@@ -179,12 +180,143 @@ PR_TEXTS = {
     "EP": "Pause to paraphrase others' viewpoints before responding, ensuring their perspective is accurately understood.\nPractise a \"day-in-the-life\" reflection, imagining issues from a colleague's or stakeholder's perspective to build deeper empathy.\nAsk open-ended, curiosity-driven questions in meetings to surface perspectives that might otherwise remain hidden."
 }
 
+# Reflection questions by dimension
+REFLECTION_QUESTIONS_DIM = {
+    'DT': [
+        'Think of a recent situation where you had to give difficult feedback. How clearly did you communicate the issue and your expectations for improvement?',
+        'When was the last time someone seemed confused after you explained something important? What could you have done differently?',
+        'Reflect on a time when you avoided a direct conversation that needed to happen. What held you back, and what was the eventual outcome?',
+        'How do you typically balance honesty with sensitivity when delivering challenging news or feedback?',
+        'Consider a recent team meeting you led. How clearly did participants understand their next steps when they left the room?'
+    ],
+    'TR': [
+        'Think of a current project. Are you focusing more on task completion or team relationships? How might you adjust this balance?',
+        'Reflect on a recent deadline pressure situation. How did you manage both productivity and team morale?',
+        'When did you last check in with a team member about their workload and well-being, rather than just project status?',
+        'Consider a time when you prioritised relationship-building over immediate results. What was the long-term impact?',
+        'How do you typically respond when team harmony conflicts with getting things done quickly?'
+    ],
+    'CO': [
+        'Think of a recent disagreement at work. How comfortable were you addressing it directly rather than hoping it would resolve itself?',
+        'Reflect on a time when avoiding conflict led to bigger problems later. What early signs could you have acted on?',
+        'When someone last disagreed with your idea, how did you respond? Did you explore their perspective or defend your position?',
+        'Consider a team meeting where tension was present but unspoken. What could you have done to surface and address it constructively?',
+        'How do you typically distinguish between healthy debate and destructive conflict in your interactions?'
+    ],
+    'CA': [
+        'Think of a recent interaction with someone from a different cultural background. What verbal or non-verbal cues did you notice, and how did you adjust your approach?',
+        'Reflect on a time when you made a cultural assumption that turned out to be incorrect. What did you learn, and how did you course-correct?',
+        'When working with international colleagues or clients, how do you typically prepare for differences in communication style or business practices?',
+        'Consider a situation where your usual communication approach didn\'t land as expected. How quickly did you recognise this and adapt?',
+        'How do you balance staying authentic to your own style while adapting to others\' cultural preferences and expectations?'
+    ],
+    'EP': [
+        'Think of a recent conversation where someone seemed upset or frustrated. How well did you understand their emotional state and perspective?',
+        'Reflect on a time when you made a decision that affected others. How thoroughly did you consider their viewpoints before proceeding?',
+        'When someone last shared a problem with you, did you focus more on solving it or on understanding how they were experiencing it?',
+        'Consider a recent team conflict or tension. How effectively did you see the situation from all parties\' perspectives?',
+        'How do you typically balance your own priorities with your awareness of others\' needs and concerns in everyday interactions?'
+    ]
+}
+
+# General reflection questions
+REFLECTION_QUESTIONS_GENERAL = [
+    'What aspect of your communication style has served you best in multicultural or diverse workplace settings?',
+    'Think of a recent cross-cultural interaction that went particularly well. What specific behaviours or approaches contributed to its success?',
+    'Reflect on a time when cultural differences created misunderstanding or tension. How did you navigate this, and what would you do differently?',
+    'How do you typically prepare yourself mentally and practically when working with people whose communication styles differ significantly from your own?',
+    'What role does active listening vs. clear speaking play in your approach to building relationships across cultural divides?',
+    'Consider your last international or multicultural project. What surprised you about the different working styles or expectations you encountered?',
+    'How do you balance maintaining your authentic self with adapting your communication style to be more effective across cultures?',
+    'When you notice tension or misunderstanding in a diverse team, what is your typical first response?',
+    'What feedback have you received about your effectiveness in multicultural settings, and how has this shaped your self-awareness?',
+    'Reflect on a leader you admire who works effectively across cultures. What specific skills or behaviours do they demonstrate that you would like to develop?'
+]
+
+# Regex to split text into sentences
+_SENT_SPLIT = re.compile(r'(?<=[.!?])\s+')
+
+
+def sentences_to_newlines(text: str) -> str:
+    """
+    Convert periods to Alt+Enter style newlines for Excel.
+    Splits on '. ' and rejoins with newlines.
+    """
+    if not text:
+        return text
+    sentences = _SENT_SPLIT.split(text.strip())
+    return '\n'.join(sentence.strip() for sentence in sentences if sentence.strip())
+
+
+def select_reflection_questions(priority_dims: List[str], participant_id: str) -> List[str]:
+    """
+    Select reflection questions using round-robin from priority dimensions + general pool.
+
+    RQ1: First priority dimension
+    RQ2: Second priority dimension
+    RQ3: Third priority dimension
+    RQ4: General pool
+
+    Uses participant_id for deterministic selection within each pool.
+    """
+    questions = []
+
+    # RQ1-RQ3: Select from priority dimensions
+    for i in range(3):
+        if i < len(priority_dims):
+            dim = priority_dims[i]
+            dim_questions = REFLECTION_QUESTIONS_DIM.get(dim, [])
+            if dim_questions:
+                # Use participant_id hash for deterministic selection
+                idx = hash(f"{participant_id}_{dim}") % len(dim_questions)
+                questions.append(dim_questions[idx])
+            else:
+                questions.append("")
+        else:
+            questions.append("")
+
+    # RQ4: Select from general pool
+    if REFLECTION_QUESTIONS_GENERAL:
+        idx = hash(f"{participant_id}_general") % len(REFLECTION_QUESTIONS_GENERAL)
+        questions.append(REFLECTION_QUESTIONS_GENERAL[idx])
+    else:
+        questions.append("")
+
+    return questions
+
 
 def one_dp_half_up(score: float) -> str:
     """Format score to 1 decimal place using ROUND_HALF_UP."""
     if score is None:
         return "N/A"
     return str(Decimal(str(score)).quantize(Decimal('0.1'), rounding=ROUND_HALF_UP))
+
+
+def band_for_score_0_5(score: float) -> str:
+    """
+    Map a 0–5 score to one of five bands.
+    Exact thresholds:
+      [4.5, 5.0]   -> 'Very High'
+      [3.5, 4.5)   -> 'High'
+      [2.5, 3.5)   -> 'Moderate / Balanced'
+      [1.5, 2.5)   -> 'Developing'
+      [0.0, 1.5)   -> 'Low / Limited'
+    """
+    if score is None:
+        return 'N/A'
+    s = float(score)
+    if 4.5 <= s <= 5.0:
+        return 'Very High'
+    if 3.5 <= s < 4.5:
+        return 'High'
+    if 2.5 <= s < 3.5:
+        return 'Moderate / Balanced'
+    if 1.5 <= s < 2.5:
+        return 'Developing'
+    if 0.0 <= s < 1.5:
+        return 'Low / Limited'
+    # Fallback for out-of-range values
+    return 'Moderate / Balanced'
 
 
 def get_band(score: float) -> str:
@@ -209,18 +341,14 @@ def format_score_cell(score: float, dim: str) -> str:
     """Format score cell with interpretation."""
     if score is None:
         return "N/A"
-    
-    band = get_band(score)
-    band = normalize_band_label(band)
-    
+
+    band = band_for_score_0_5(score)
+
     interp = SCORE_INTERP.get(dim, {}).get(band, "")
     if not interp:
         interp = "Score interpretation not available"
-    
-    # Take first sentence only
-    first_sentence = interp.split('.')[0] + '.' if '.' in interp else interp
-    
-    return f"{score:.2f} - {first_sentence}"
+
+    return f"{score:.2f} — {interp}"
 
 
 def build_scores_with_bands(scores: Dict[str, float]) -> List[Tuple[str, float, str]]:
@@ -594,13 +722,13 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
             for i, (dim, icon_key, title, body) in enumerate(ks_items, 1):
                 out_row[f"KS{i}_Icon"] = ""  # Will be filled with image
                 out_row[f"KS{i}_Title"] = title
-                out_row[f"KS{i}_Body"] = body
+                out_row[f"KS{i}_Body"] = sentences_to_newlines(body)
 
             # DA items (dim, icon_key, title, body)
             for i, (dim, icon_key, title, body) in enumerate(da_items, 1):
                 out_row[f"DA{i}_Icon"] = ""  # Will be filled with image
                 out_row[f"DA{i}_Title"] = title
-                out_row[f"DA{i}_Body"] = body
+                out_row[f"DA{i}_Body"] = sentences_to_newlines(body)
 
             # PR items (unchanged format)
             for i, (dim, title, body) in enumerate(pr_items, 1):
@@ -608,11 +736,15 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
                 out_row[f"PR{i}_Title"] = title
                 out_row[f"PR{i}_Body"] = format_body_lines(body)
 
-            # RQ fields (placeholder for future use)
-            out_row["RQ1"] = ""
-            out_row["RQ2"] = ""
-            out_row["RQ3"] = ""
-            out_row["RQ4"] = ""
+            # RQ fields: Reflection questions based on priority dimensions
+            priority_dims = _dev_priority_dims(scores)
+            participant_id = str(processed['ID']) if processed['ID'] is not None else ""
+            reflection_questions = select_reflection_questions(priority_dims, participant_id)
+
+            out_row["RQ1"] = reflection_questions[0] if len(reflection_questions) > 0 else ""
+            out_row["RQ2"] = reflection_questions[1] if len(reflection_questions) > 1 else ""
+            out_row["RQ3"] = reflection_questions[2] if len(reflection_questions) > 2 else ""
+            out_row["RQ4"] = reflection_questions[3] if len(reflection_questions) > 3 else ""
 
             output_data.append(out_row)
         
@@ -650,6 +782,12 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
             worksheet.set_column(COL['Summary'], COL['Summary'], 35)  # Summary
             worksheet.set_column(COL['Radar_Chart'], COL['Radar_Chart'], 40)  # Radar Chart (wider for high-res)
 
+            # Create format for body text with text_wrap and top alignment
+            body_format = workbook.add_format({
+                'text_wrap': True,
+                'valign': 'top'
+            })
+
             # KS block: Icon/Title/Body
             for i in range(1, 4):
                 icon_col = COL[f"KS{i}_Icon"]
@@ -680,6 +818,28 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
             # Set row heights for image rows (taller for high-res radar)
             for row_idx in range(1, len(result_df) + 1):
                 worksheet.set_row(row_idx, 160)  # Taller rows so scaled radar doesn't look cramped
+
+            # Apply text_wrap and valign formatting to body and summary columns
+            for row_idx in range(1, len(result_df) + 1):  # Skip header
+                # Summary column
+                worksheet.write(row_idx, COL['Summary'], result_df.iloc[row_idx - 1]['Summary'], body_format)
+
+                # KS, DA, PR body columns
+                for i in range(1, 4):
+                    for section in ['KS', 'DA', 'PR']:
+                        body_col_name = f"{section}{i}_Body"
+                        if body_col_name in COL:
+                            col_idx = COL[body_col_name]
+                            cell_value = result_df.iloc[row_idx - 1][body_col_name]
+                            worksheet.write(row_idx, col_idx, cell_value, body_format)
+
+                # RQ columns
+                for i in range(1, 5):
+                    rq_col_name = f"RQ{i}"
+                    if rq_col_name in COL:
+                        col_idx = COL[rq_col_name]
+                        cell_value = result_df.iloc[row_idx - 1][rq_col_name]
+                        worksheet.write(row_idx, col_idx, cell_value, body_format)
             
             # Embed images for each row
             for row_idx, row_data in enumerate(output_data):

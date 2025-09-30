@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: ccip
+Version: 1.0.0
+Summary: CCA / CCIP Composer - Cross-Cultural Intelligence Profile Report Generator
+Requires-Python: >=3.9
+Requires-Dist: pandas>=2.2
+Requires-Dist: numpy>=1.26
+Requires-Dist: Pillow>=10.3
+Requires-Dist: XlsxWriter>=3.2
+Requires-Dist: cairosvg>=2.7

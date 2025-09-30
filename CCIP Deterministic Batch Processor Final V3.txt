@@ -1,0 +1,962 @@
+CCIP Deterministic Batch Processor Final v3
+# =========================
+# BEGIN PART 1 OF 3
+# SECTION 0: CONFIG, CONSTANTS, SCHEMA (WITH NEW INTERPRETATION COLUMNS) AND UTILITIES
+# =========================
+
+from typing import Dict, List, Tuple
+import math
+import re
+
+SPEC_VERSION = "CCIP-1.7.0"  # bump: +5 interpretation columns, score-in-title, first-name-only summary
+
+# Fixed axis order for all selection, titling, and charts
+# Symbols: DT, TR, CO, CA, EP
+DIMENSIONS: List[str] = ["DT", "TR", "CO", "CA", "EP"]
+
+# Display names used in all user-facing text and titles
+DIMENSION_DISPLAY: Dict[str, str] = {
+    "DT": "Directness and Transparency",
+    "TR": "Task versus Relational",
+    "CO": "Conflict Orientation",
+    "CA": "Cultural Adaptability",
+    "EP": "Empathy and Perspective-Taking",
+}
+
+# Angles for radar chart, degrees, clockwise from +x, but we will draw using standard math coordinates
+# Required geometry: Top (-90°), Upper Right (-18°), Lower Right (54°), Lower Left (126°), Upper Left (198°)
+RADAR_ANGLES_DEG = {
+    "DT": -90.0,
+    "TR": -18.0,
+    "CO": 54.0,
+    "CA": 126.0,
+    "EP": 198.0,
+}
+
+# Field caps (hard limits). Titles are small, not compressed.
+FIELD_LIMITS = {
+    "INTERPRETATION_CHAR_MAX": 140,
+    "SUMMARY_CHAR_MAX": 1200,
+    "BODY_CHAR_MAX": 900,
+    "RECOMM_CHAR_MAX": 400,
+    "REFLECT_Q_CHAR_MAX": 200,
+}
+
+# Output schema anchor. We prioritise schema-first ordering, then append any pass-through columns (stable-ordered) if present.
+# Insert the five interpretation columns immediately after the five score columns.
+# Note: Keep names exactly as written here to avoid downstream breakage.
+OUTPUT_SCHEMA_ANCHOR: List[str] = [
+    # Participant identity fields (pass-through if present in the input; we include common names here for stability)
+    "ID",
+    "Start time",
+    "Completion time",
+    "Email",
+    "Name",
+    "Last modified time",
+
+    # Core numeric scores for each dimension (Likert 1..5 inclusive, two decimals in text where needed)
+    "DT_Score",
+    "TR_Score",
+    "CO_Score",
+    "CA_Score",
+    "EP_Score",
+
+    # NEW: one sentence interpretations (≤140 chars) for each dimension, deterministic, no names
+    "DT_Interpretation",
+    "TR_Interpretation",
+    "CO_Interpretation",
+    "CA_Interpretation",
+    "EP_Interpretation",
+
+    # Strengths (top 2), titles must be "Display Name (0.00)"
+    "Strength_1_Title",
+    "Strength_1_Body",
+    "Strength_2_Title",
+    "Strength_2_Body",
+
+    # Development areas (bottom 3), titles must be "Display Name (0.00)"
+    "Development_1_Title",
+    "Development_1_Body",
+    "Development_2_Title",
+    "Development_2_Body",
+    "Development_3_Title",
+    "Development_3_Body",
+
+    # Narrative summary, personalised with first name only or lone surname
+    "Summary",
+
+    # SVG radar chart column (tight viewBox, pentagon grid)
+    "Radar_SVG",
+]
+
+# Deterministic tie-break order maps directly to fixed axis order
+TIE_BREAK_ORDER: Dict[str, int] = {d: i for i, d in enumerate(DIMENSIONS)}
+
+# Safe trimming for text fields
+def _collapse_ws(s: str) -> str:
+    return re.sub(r"\s+", " ", s or "").strip()
+
+def _truncate(s: str, max_chars: int) -> str:
+    s = s or ""
+    if len(s) <= max_chars:
+        return s
+    # Preserve sentence boundary if possible
+    cut = s[:max_chars].rstrip()
+    # if last char is mid-word, hard cut; else keep as is
+    return cut
+
+def _round2(x: float) -> float:
+    # stable two-decimal rounding
+    return float(f"{x:.2f}")
+
+def score_to_band(score: float) -> str:
+    """
+    Score bands:
+    1.00–1.99 very_low
+    2.00–2.99 low
+    3.00–3.49 moderate
+    3.50–4.24 strong
+    4.25–5.00 very_strong
+    """
+    if score < 2.0:
+        return "very_low"
+    if score < 3.0:
+        return "low"
+    if score < 3.5:
+        return "moderate"
+    if score < 4.25:
+        return "strong"
+    return "very_strong"
+
+def format_title_with_score(dimension_key: str, score: float) -> str:
+    disp = DIMENSION_DISPLAY[dimension_key]
+    return f"{disp} ({_round2(score):.2f})"
+
+# Stable output field ordering:
+# 1) anchor schema in order
+# 2) then any remaining fields from the row (sorted for determinism)
+def order_output_fields(row: Dict[str, str]) -> List[str]:
+    anchor = [c for c in OUTPUT_SCHEMA_ANCHOR if c in row]
+    remaining = sorted([c for c in row.keys() if c not in OUTPUT_SCHEMA_ANCHOR])
+    return anchor + remaining
+
+
+# =========================
+# SECTION 1: INPUT MAPPING AND NAME NORMALISATION
+# =========================
+
+# Name precedence:
+# 1) "Name" column if present and non-empty
+# 2) The long prompt field you use in your form for name capture (Column G in your form), captured here as EXACT header string:
+ALT_NAME_HEADERS = [
+    "Please type your name here so a personal report can be created - your results will not be shared with anyone",
+    "Please type your name here",  # tolerant alias if older forms shortened it
+]
+
+def extract_raw_name(input_row: Dict[str, str]) -> str:
+    name = _collapse_ws(input_row.get("Name", ""))
+    if name:
+        return name
+    for h in ALT_NAME_HEADERS:
+        alt = _collapse_ws(input_row.get(h, ""))
+        if alt:
+            return alt
+    return ""
+
+def preferred_display_name(input_row: Dict[str, str]) -> str:
+    """
+    Summary must avoid full name. Use first token if multi-token.
+    If only one token (often a surname), use it as given.
+    If empty, return a neutral token.
+    Never derive from email.
+    """
+    raw = extract_raw_name(input_row)
+    if not raw:
+        return "This participant"
+    tokens = [t for t in re.split(r"\s+", raw) if t]
+    if not tokens:
+        return "This participant"
+    if len(tokens) == 1:
+        return tokens[0]
+    # multi-token: use first token only
+    return tokens[0]
+
+
+# =========================
+# SECTION 2: ONE-SENTENCE INTERPRETATIONS (DETEMPLATED, DETERMINISTIC)
+# =========================
+
+# Templates per dimension and band. Each must be ≤140 characters, single sentence, hedged and British spelling.
+INTERP_TEMPLATES: Dict[str, Dict[str, str]] = {
+    "DT": {
+        "very_low":  "Tends to avoid direct, transparent messaging, which may limit clarity in difficult exchanges.",
+        "low":       "Usually softens messages, so clarity and candour can be reduced in complex moments.",
+        "moderate":  "Balances directness with tact, though clarity may vary under pressure.",
+        "strong":    "Communicates plainly while maintaining tact, aiding shared understanding.",
+        "very_strong":"Consistently frank and clear, likely to surface issues early and reduce ambiguity.",
+    },
+    "TR": {
+        "very_low":  "Prioritises relationships strongly, so task focus can slip without structured follow-up.",
+        "low":       "Leans relational, often investing in rapport before task progression.",
+        "moderate":  "Balances task needs with relationships, adapting to situational demands.",
+        "strong":    "Keeps tasks moving whilst tending to relationships as needed.",
+        "very_strong":"Stays highly task-focused and efficient, with selective investment in relationship work.",
+    },
+    "CO": {
+        "very_low":  "Prefers to avoid conflict, which can delay needed conversations.",
+        "low":       "Often seeks compromise and de-escalation, sometimes deferring hard calls.",
+        "moderate":  "Handles disagreements with measured assertiveness when required.",
+        "strong":    "Addresses tensions promptly and constructively to keep work on track.",
+        "very_strong":"Comfortable with high-stakes discussions, likely to confront issues decisively.",
+    },
+    "CA": {
+        "very_low":  "Struggles to adapt style across contexts, risking misalignment in diverse settings.",
+        "low":       "Makes some adjustments across cultures and roles, though not consistently.",
+        "moderate":  "Adapts style when cued, with room to anticipate context earlier.",
+        "strong":    "Shifts style proactively to suit diverse norms and expectations.",
+        "very_strong":"Reads context quickly and adapts fluidly, enabling inclusive collaboration.",
+    },
+    "EP": {
+        "very_low":  "Perspective-taking is limited, which can constrain trust and buy-in.",
+        "low":       "Shows empathy selectively, sometimes missing others’ constraints.",
+        "moderate":  "Listens and considers alternatives, with varied depth by situation.",
+        "strong":    "Seeks to understand others’ views and integrates them into action.",
+        "very_strong":"Consistently attentive and empathetic, enabling strong psychological safety.",
+    },
+}
+
+def dimension_interpretation(dimension_key: str, score: float) -> str:
+    """
+    Deterministic mapping from score to one-sentence interpretation.
+    """
+    band = score_to_band(score)
+    template = INTERP_TEMPLATES[dimension_key][band]
+    text = _collapse_ws(template)
+    return _truncate(text, FIELD_LIMITS["INTERPRETATION_CHAR_MAX"])
+
+
+# =========================
+# SECTION R: RADAR CHART GENERATION (SVG, TIGHT VIEWBOX, 2 PX PADDING)
+# =========================
+
+def _angle_rad(deg: float) -> float:
+    return math.radians(deg)
+
+def _polar_to_xy(cx: float, cy: float, r: float, angle_deg: float) -> Tuple[float, float]:
+    a = _angle_rad(angle_deg)
+    x = cx + r * math.cos(a)
+    y = cy + r * math.sin(a)
+    return (x, y)
+
+def generate_radar_chart_svg(scores_by_dim: Dict[str, float], size: int = 200, padding_px: int = 2) -> str:
+    """
+    Tight radar SVG for CCIP.
+    Inputs:
+      scores_by_dim: dict like {"DT": 3.2, "TR": 4.0, ...}, all 1..5
+      size: square canvas in px
+      padding_px: outer whitespace in px (default 2)
+
+    Geometry:
+      Pentagon axes at fixed angles:
+        DT -90°, TR -18°, CO 54°, CA 126°, EP 198°
+      Outer radius R = size/2 - padding_px
+      5 grid rings for Likert 1..5
+    """
+    # Canvas and radii
+    cx = cy = size / 2.0
+    R = (size / 2.0) - padding_px
+    r_unit = R / 5.0  # 1 Likert unit
+
+    # Ensure dimension order
+    dims = DIMENSIONS
+
+    # Compute polygon points for the score shape
+    poly_points = []
+    for d in dims:
+        s = max(1.0, min(5.0, float(scores_by_dim.get(d, 1.0))))
+        r = s * r_unit
+        ang = RADAR_ANGLES_DEG[d]
+        x, y = _polar_to_xy(cx, cy, r, ang)
+        poly_points.append(f"{x:.2f},{y:.2f}")
+    polygon_str = " ".join(poly_points)
+
+    # Build grid lines (rings) and spokes
+    ring_paths = []
+    for level in [1, 2, 3, 4, 5]:
+        pts = []
+        for d in dims:
+            x, y = _polar_to_xy(cx, cy, level * r_unit, RADAR_ANGLES_DEG[d])
+            pts.append((x, y))
+        # Close polygon ring
+        ring_d = "M " + " L ".join(f"{x:.2f},{y:.2f}" for (x, y) in pts) + " Z"
+        ring_paths.append(f'<path d="{ring_d}" fill="none" stroke="currentColor" stroke-opacity="0.12" stroke-width="0.8"/>')
+
+    spoke_paths = []
+    for d in dims:
+        x, y = _polar_to_xy(cx, cy, R, RADAR_ANGLES_DEG[d])
+        spoke_paths.append(f'<line x1="{cx:.2f}" y1="{cy:.2f}" x2="{x:.2f}" y2="{y:.2f}" stroke="currentColor" stroke-opacity="0.18" stroke-width="0.7"/>')
+
+    # Foreground polygon (score area)
+    score_polygon = (
+        f'<polygon points="{polygon_str}" '
+        f'fill="currentColor" fill-opacity="0.18" '
+        f'stroke="currentColor" stroke-width="1.2" stroke-opacity="0.9"/>'
+    )
+
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
+        f'viewBox="0 0 {size} {size}" role="img" aria-label="CCIP radar chart">'
+        f'<g>'
+        + "".join(ring_paths)
+        + "".join(spoke_paths)
+        + score_polygon
+        + "</g></svg>"
+    )
+    return svg
+
+# Helper to convert a vector [DT, TR, CO, CA, EP] to dict input for the radar
+def radar_svg_from_vector(score_vector: List[float], size: int = 200, padding_px: int = 2) -> str:
+    sv = {d: float(score_vector[i]) for i, d in enumerate(DIMENSIONS)}
+    return generate_radar_chart_svg(sv, size=size, padding_px=padding_px)
+
+# =========================
+# END PART 1 OF 3
+# Next part will add:
+# - strengths and development selection
+# - score-in-title formatting usage
+# - summary writer with first-name-only rule
+# - compression and length control for narrative fields
+# =========================
+
+# =========================
+# BEGIN PART 2 OF 3
+# SECTION 3: STRENGTHS/DEVELOPMENTS SELECTION, TITLES WITH SCORES, SUMMARY (FIRST-NAME-ONLY), AND COMPRESSION
+# =========================
+
+from typing import Dict, List, Tuple
+
+# ---------- Selection helpers (deterministic) ----------
+
+def _sorted_dims_desc(scores_by_dim: Dict[str, float]) -> List[Tuple[str, float]]:
+    """
+    Sort dimensions by score descending; break ties using fixed axis order (TIE_BREAK_ORDER).
+    """
+    items = [(d, float(scores_by_dim.get(d, 0.0))) for d in DIMENSIONS]
+    # sort by (-score, tie_break_index)
+    return sorted(items, key=lambda kv: (-kv[1], TIE_BREAK_ORDER[kv[0]]))
+
+def select_strengths_and_developments(scores_by_dim: Dict[str, float], top_n: int = 2, bottom_n: int = 3) -> Tuple[List[str], List[str]]:
+    ordered = _sorted_dims_desc(scores_by_dim)
+    strengths = [d for d, _ in ordered[:top_n]]
+    developments = [d for d, _ in ordered[-bottom_n:]]  # lowest at the end already
+    # Ensure deterministic order for developments: lowest to higher (ascending)
+    developments = sorted(developments, key=lambda d: (scores_by_dim.get(d, 0.0), TIE_BREAK_ORDER[d]))
+    return strengths, developments
+
+# ---------- Body templates (deterministic, banded) ----------
+
+# Two to three concise sentences; British spelling; neutral tone; no names; ≤ BODY_CHAR_MAX via compressor.
+STRENGTH_BODY_TEMPLATES: Dict[str, Dict[str, str]] = {
+    "DT": {
+        "very_low":  "Clarity emerges when prompted, yet direct phrasing is used sparingly. With scaffolds, key points can still surface early.",
+        "low":       "Prefers softened phrasing while staying understandable. Light structure supports timely candour when stakes rise.",
+        "moderate":  "Uses plain language with tact. Under pressure, brief signposting maintains clarity and momentum.",
+        "strong":    "States messages plainly and helpfully. This steadies shared understanding and speeds decisions.",
+        "very_strong":"Brings crisp, transparent communication. Issues are aired early, reducing ambiguity and rework.",
+    },
+    "TR": {
+        "very_low":  "Invests deeply in relationships. When paired with task check-ins, delivery remains dependable.",
+        "low":       "Warms collaboration through rapport. Light cadence on deliverables preserves pace.",
+        "moderate":  "Balances rapport with delivery. Adjusts emphasis as constraints shift.",
+        "strong":    "Maintains progress whilst tending to relationships. This balance supports durable outcomes.",
+        "very_strong":"Keeps strong task velocity. Relationship touchpoints are used intentionally to sustain cooperation.",
+    },
+    "CO": {
+        "very_low":  "Conflict is approached cautiously. Preparing frames and outcomes enables constructive dialogue.",
+        "low":       "Prefers de-escalation and compromise. Timely framing helps decisions move forward.",
+        "moderate":  "Addresses disagreements with measured assertiveness. Focus on interests supports resolution.",
+        "strong":    "Raises tensions early and constructively. This prevents drift and protects timelines.",
+        "very_strong":"Handles high-stakes discussion decisively. Clear boundaries and options accelerate closure.",
+    },
+    "CA": {
+        "very_low":  "Style shifts occur infrequently. Early context scans reduce misalignment in diverse settings.",
+        "low":       "Adapts with cues. Simple check-ins align norms and expectations across roles.",
+        "moderate":  "Adjusts style when needed. Anticipating norms earlier improves fit.",
+        "strong":    "Proactively tailors approach to context. This unlocks inclusive participation.",
+        "very_strong":"Reads context quickly and adapts fluidly. Collaboration remains smooth across differences.",
+    },
+    "EP": {
+        "very_low":  "Perspective-taking can be limited. Short curiosity prompts widen shared understanding.",
+        "low":       "Shows empathy selectively. Clarifying constraints builds trust and flow.",
+        "moderate":  "Listens and integrates input. Summarising views keeps alignment visible.",
+        "strong":    "Attends closely to others’ needs. Integration of perspectives strengthens safety.",
+        "very_strong":"Consistently empathic and attentive. This fosters psychological safety and commitment.",
+    },
+}
+
+DEV_BODY_TEMPLATES: Dict[str, Dict[str, str]] = {
+    "DT": {
+        "very_low":  "Practise concise, signposted messages. Use ‘headlines first’, then brief rationale, to increase clarity under pressure.",
+        "low":       "Adopt ‘headline, why, what next’. Timebox sensitive updates to grow comfort with candour.",
+        "moderate":  "Tighten key points when stakes rise. Summarise decisions and owners to lock clarity.",
+        "strong":    "Sustain clarity under load. Add one-sentence summaries to prevent drift.",
+        "very_strong":"Guard against bluntness. Pair directness with options and next steps to keep buy-in high.",
+    },
+    "TR": {
+        "very_low":  "Add lightweight deliverable checkpoints. Pair rapport-building with visible progress signals.",
+        "low":       "Set cadence for milestones. Use brief agendas to keep momentum without losing warmth.",
+        "moderate":  "Surface task risks earlier. Align on trade-offs when relationship needs intensify.",
+        "strong":    "Preserve space for rapport during crunch. Micro-retros keep both pace and trust high.",
+        "very_strong":"Insert relational touchpoints in long sprints. Short appreciations sustain cooperation.",
+    },
+    "CO": {
+        "very_low":  "Use structured frames: issue, stakes, options. Schedule brief, timed discussions to reduce avoidance.",
+        "low":       "Name tensions early with neutral language. Separate people from problems to ease entry.",
+        "moderate":  "Clarify success criteria before debate. Summarise agreements to prevent reopen.",
+        "strong":    "Invite counter-arguments to stress-test positions. Capture decisions and dissent items.",
+        "very_strong":"Watch for over-assertion. Offer choice sets and constraints to protect consensus.",
+    },
+    "CA": {
+        "very_low":  "Run a quick norms scan per context. Mirror preferred channels and pacing to improve fit.",
+        "low":       "Ask how others prefer updates and decisions. Adjust tone and detail accordingly.",
+        "moderate":  "Pre-brief stakeholders with tailored summaries. Reduce assumed knowledge where needed.",
+        "strong":    "Document local norms for newcomers. Rotate facilitation to broaden inclusion.",
+        "very_strong":"Check for over-adaptation. Keep core standards visible whilst flexing form.",
+    },
+    "EP": {
+        "very_low":  "Use two curiosity prompts before advising. Paraphrase constraints to show understanding.",
+        "low":       "Adopt brief ‘listen–summarise–plan’ loops. Validate constraints before proposing options.",
+        "moderate":  "Invite quieter voices early. Close with shared next steps to reinforce alignment.",
+        "strong":    "Balance empathy with clear commitments. Track follow-through to maintain trust.",
+        "very_strong":"Avoid over-accommodation. Timebox exploration and move to decisions when signals converge.",
+    },
+}
+
+def _strength_body(dimension_key: str, score: float) -> str:
+    band = score_to_band(score)
+    text = _collapse_ws(STRENGTH_BODY_TEMPLATES[dimension_key][band])
+    return _truncate(text, FIELD_LIMITS["BODY_CHAR_MAX"])
+
+def _development_body(dimension_key: str, score: float) -> str:
+    band = score_to_band(score)
+    text = _collapse_ws(DEV_BODY_TEMPLATES[dimension_key][band])
+    return _truncate(text, FIELD_LIMITS["BODY_CHAR_MAX"])
+
+# ---------- Title builders (uses score-in-title format) ----------
+
+def build_titles_with_scores(scores_by_dim: Dict[str, float], dims: List[str]) -> List[str]:
+    return [format_title_with_score(d, float(scores_by_dim.get(d, 0.0))) for d in dims]
+
+# ---------- Strengths & Developments packer ----------
+
+def build_strengths_and_developments(scores_by_dim: Dict[str, float]) -> Dict[str, str]:
+    """
+    Returns a dict with the 10 fields:
+      Strength_1_Title, Strength_1_Body, Strength_2_Title, Strength_2_Body,
+      Development_1_Title, Development_1_Body, Development_2_Title, Development_2_Body,
+      Development_3_Title, Development_3_Body
+    Deterministic selection and formatting.
+    """
+    strengths, developments = select_strengths_and_developments(scores_by_dim, top_n=2, bottom_n=3)
+
+    # Titles
+    s_titles = build_titles_with_scores(scores_by_dim, strengths)
+    d_titles = build_titles_with_scores(scores_by_dim, developments)
+
+    # Bodies
+    s_bodies = [_strength_body(d, float(scores_by_dim.get(d, 0.0))) for d in strengths]
+    d_bodies = [_development_body(d, float(scores_by_dim.get(d, 0.0))) for d in developments]
+
+    return {
+        "Strength_1_Title": s_titles[0],
+        "Strength_1_Body":  s_bodies[0],
+        "Strength_2_Title": s_titles[1],
+        "Strength_2_Body":  s_bodies[1],
+        "Development_1_Title": d_titles[0],
+        "Development_1_Body":  d_bodies[0],
+        "Development_2_Title": d_titles[1],
+        "Development_2_Body":  d_bodies[1],
+        "Development_3_Title": d_titles[2],
+        "Development_3_Body":  d_bodies[2],
+    }
+
+# ---------- Per-dimension interpretations (1 sentence each, already defined in Part 1) ----------
+
+def build_interpretations(scores_by_dim: Dict[str, float]) -> Dict[str, str]:
+    return {
+        "DT_Interpretation": dimension_interpretation("DT", float(scores_by_dim.get("DT", 0.0))),
+        "TR_Interpretation": dimension_interpretation("TR", float(scores_by_dim.get("TR", 0.0))),
+        "CO_Interpretation": dimension_interpretation("CO", float(scores_by_dim.get("CO", 0.0))),
+        "CA_Interpretation": dimension_interpretation("CA", float(scores_by_dim.get("CA", 0.0))),
+        "EP_Interpretation": dimension_interpretation("EP", float(scores_by_dim.get("EP", 0.0))),
+    }
+
+# ---------- Summary generator (first-name-only or lone surname) ----------
+
+def _mean(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
+
+def _comma_join(names: List[str]) -> str:
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return ", ".join(names[:-1]) + f", and {names[-1]}"
+
+def generate_summary(input_row: Dict[str, str], scores_by_dim: Dict[str, float]) -> str:
+    """
+    Deterministic narrative summary with first-name-only personalisation.
+    Never includes the full name. Uses strengths (top 2) and developments (bottom 3).
+    """
+    display_name = preferred_display_name(input_row)
+    strengths, developments = select_strengths_and_developments(scores_by_dim, top_n=2, bottom_n=3)
+
+    # Prepare lists for readability
+    s_names = [DIMENSION_DISPLAY[d] for d in strengths]
+    d_names = [DIMENSION_DISPLAY[d] for d in developments]
+
+    avg = _round2(_mean([float(scores_by_dim.get(d, 0.0)) for d in DIMENSIONS]))
+
+    # Compose summary in a compact, neutral style
+    parts: List[str] = []
+
+    # Opening: participant reference
+    if display_name == "This participant":
+        parts.append(f"Overall pattern averages {avg:.2f} on the five dimensions.")
+    else:
+        parts.append(f"{display_name} averages {avg:.2f} across the five dimensions.")
+
+    # Strengths sentence
+    parts.append(f"Key strengths are {_comma_join(s_names)}.")
+
+    # Developments sentence
+    parts.append(f"Priority development areas are {_comma_join(d_names)}.")
+
+    # Guidance sentence aligned to profile balance
+    # Use banding of average to keep language stable
+    band = score_to_band(float(avg))
+    if band in ("very_low", "low"):
+        parts.append("Emphasis on simple structures and early check-ins will help build pace and clarity.")
+    elif band == "moderate":
+        parts.append("Consistent routines and brief pre-reads can lift reliability without adding overhead.")
+    elif band == "strong":
+        parts.append("Maintaining cadence under pressure and documenting decisions will protect delivery.")
+    else:  # very_strong
+        parts.append("Guard against over-optimisation by adding brief reflection to preserve inclusivity.")
+
+    text = _collapse_ws(" ".join(parts))
+    return _truncate(text, FIELD_LIMITS["SUMMARY_CHAR_MAX"])
+
+# ---------- Compression registry (idempotent caps) ----------
+
+# Titles are intentionally excluded from compression (already short and strictly formatted).
+COMPRESSION_CAPS: Dict[str, int] = {
+    "DT_Interpretation": FIELD_LIMITS["INTERPRETATION_CHAR_MAX"],
+    "TR_Interpretation": FIELD_LIMITS["INTERPRETATION_CHAR_MAX"],
+    "CO_Interpretation": FIELD_LIMITS["INTERPRETATION_CHAR_MAX"],
+    "CA_Interpretation": FIELD_LIMITS["INTERPRETATION_CHAR_MAX"],
+    "EP_Interpretation": FIELD_LIMITS["INTERPRETATION_CHAR_MAX"],
+    "Strength_1_Body": FIELD_LIMITS["BODY_CHAR_MAX"],
+    "Strength_2_Body": FIELD_LIMITS["BODY_CHAR_MAX"],
+    "Development_1_Body": FIELD_LIMITS["BODY_CHAR_MAX"],
+    "Development_2_Body": FIELD_LIMITS["BODY_CHAR_MAX"],
+    "Development_3_Body": FIELD_LIMITS["BODY_CHAR_MAX"],
+    "Summary": FIELD_LIMITS["SUMMARY_CHAR_MAX"],
+}
+
+def apply_compression_caps(row: Dict[str, str]) -> Dict[str, str]:
+    """
+    Returns a new dict with the same keys, after applying caps where defined.
+    Idempotent: calling twice yields the same result.
+    """
+    out = dict(row)
+    for k, cap in COMPRESSION_CAPS.items():
+        if k in out and out[k] is not None:
+            out[k] = _truncate(_collapse_ws(str(out[k])), cap)
+    return out
+
+# ---------- Convenience: build all narrative outputs for a participant ----------
+
+def build_narratives_for_participant(input_row: Dict[str, str], scores_by_dim: Dict[str, float]) -> Dict[str, str]:
+    """
+    Builds:
+      - five per-dimension interpretations
+      - strengths/developments (2/3) with score-in-title formatting and banded bodies
+      - first-name-only summary
+      - radar SVG
+    Applies compression caps to relevant fields.
+    """
+    # Scores (ensure float)
+    sbd = {d: float(scores_by_dim.get(d, 0.0)) for d in DIMENSIONS}
+
+    interps = build_interpretations(sbd)
+    sd_pack = build_strengths_and_developments(sbd)
+    summary = generate_summary(input_row, sbd)
+    radar_svg = generate_radar_chart_svg(sbd, size=200, padding_px=2)
+
+    out: Dict[str, str] = {}
+    out.update(interps)
+    out.update(sd_pack)
+    out["Summary"] = summary
+    out["Radar_SVG"] = radar_svg
+
+    # Apply caps
+    out = apply_compression_caps(out)
+    return out
+
+# =========================
+# END PART 2 OF 3
+# Next part will add:
+# - end-to-end row pipeline (including score calculation hook)
+# - CSV I/O batch processor with header validation
+# - golden tests and SPEC changelog exposure
+# =========================
+
+# =========================
+# BEGIN PART 3 OF 3
+# SECTION 7–11: SCORE ENGINE, ROW PIPELINE, BATCH I/O, VALIDATORS, SANITY TESTS, CHANGELOG
+# =========================
+
+from typing import Dict, List, Tuple, Any
+import csv
+import math
+import re
+
+# ---------- Likert parsing (deterministic) ----------
+
+LIKERT_MAP = {
+    "strongly agree": 5,
+    "agree": 4,
+    "neutral": 3,
+    "disagree": 2,
+    "strongly disagree": 1,
+}
+
+def _nz(s: Any) -> str:
+    return "" if s is None else str(s)
+
+def _normalise_quotes(s: str) -> str:
+    return (
+        s.replace("\u2018", "'")
+         .replace("\u2019", "'")
+         .replace("\u201C", '"')
+         .replace("\u201D", '"')
+         .replace("\u2026", "...")
+    )
+
+def _canon_header(s: str) -> str:
+    # collapse whitespace, convert NBSP to space, drop trailing spaces/dots
+    z = _normalise_quotes(_nz(s)).replace("\xa0", " ")
+    z = re.sub(r"\s+", " ", z).strip()
+    # Remove a single trailing period and stray space for robust matches
+    z = z[:-1] if z.endswith(".") else z
+    return z
+
+def parse_likert(value: Any) -> float:
+    """
+    Robust Likert parser: maps common strings to 1..5.
+    Also accepts numeric strings ('1'..'5').
+    Returns 0.0 if unparseable (ignored in averages).
+    """
+    s = _nz(value).strip()
+    if not s:
+        return 0.0
+    # numeric path
+    if re.fullmatch(r"[1-5](?:\.0+)?", s):
+        return float(s)
+    key = s.lower().replace("-", " ")
+    key = re.sub(r"\s+", " ", key)
+    return float(LIKERT_MAP.get(key, 0))
+
+# ---------- Item → Dimension map (from your uploaded sheet; no placeholders) ----------
+
+# Each entry: canonicalised header -> (DIMENSION, REVERSE_CODE_BOOL)
+# Reverse-coding means invert as v' = 6 - v (where v ∈ [1..5]).
+ITEM_MAP: Dict[str, Tuple[str, bool]] = {
+    # Directness and Transparency (DT)
+    _canon_header("I prefer to be clear and direct, even if it risks offending someone"): ("DT", False),
+    _canon_header("I usually soften feedback to maintain harmony"): ("DT", True),
+    _canon_header("I reflect on whether I am being \"too direct\" or \"too indirect\" for the context"): ("DT", False),
+    _canon_header("I am comfortable being transparent about challenges, even when the news is difficult"): ("DT", False),
+    _canon_header("I believe building trust requires balancing honesty with sensitivity in communication"): ("DT", False),
+    _canon_header("I am willing to have transparent conversations even when they may be uncomfortable"): ("DT", False),
+    _canon_header("I can balance openness with discretion when discussing sensitive issues"): ("DT", False),
+
+    # Task versus Relational (TR)
+    _canon_header("I prioritise empathy and relationships over tasks when communicating"): ("TR", True),
+    _canon_header("I hold others accountable for respectful and timely communication"): ("TR", False),
+    _canon_header("I balance maintaining relationships with ensuring tasks and deadlines are achieved"): ("TR", False),
+
+    # Conflict Orientation (CO)
+    _canon_header("I prefer to avoid confrontation and look for compromise"): ("CO", True),
+    _canon_header("I feel comfortable giving negative feedback to colleagues, regardless of their seniority"): ("CO", False),
+    _canon_header("I take responsibility for addressing communication issues rather than avoiding them"): ("CO", False),
+
+    # Cultural Adaptability (CA)
+    _canon_header("I consciously adapt my communication style when working with people from different cultures"): ("CA", False),
+    _canon_header("I consider hierarchy and seniority before deciding how to phrase feedback"): ("CA", False),
+    _canon_header("I can usually tell when someone is uncomfortable due to cultural differences"): ("CA", False),
+    _canon_header("I seek to understand the cultural background of colleagues before making assumptions"): ("CA", False),
+    _canon_header("I consider the cultural impact of sharing sensitive information before deciding what to disclose"): ("CA", False),
+
+    # Empathy and Perspective-Taking (EP)
+    _canon_header("I actively try to see situations from others' cultural or personal perspectives"): ("EP", False),
+    _canon_header("I use empathy phrases like \"Help me understand...\" to encourage openness"): ("EP", False),
+    _canon_header("I notice non-verbal cues (tone, body language, expressions) that signal how others are feeling"): ("EP", False),
+    _canon_header("I adjust my communication when I sense that someone is uncomfortable or not engaged"): ("EP", False),
+    _canon_header("I make an effort to understand what matters most to others before I share my own views"): ("EP", False),
+
+    # Duplicated items present in your sheet with slightly different punctuation/spacing — canonicalised variants:
+    _canon_header("I actively try to see situations from others’ cultural or personal perspectives"): ("EP", False),
+    _canon_header("I use empathy phrases like “Help me understand…” to encourage openness"): ("EP", False),
+}
+
+# Headers present in your uploaded file that we pass through if found
+PASS_THROUGH_HEADERS = [
+    "ID", "Start time", "Completion time", "Email", "Name", "Last modified time",
+    "Please type your name here so a personal report can be created - your results will not be shared with anyone",
+    "Please type your email address here so a personal report can be created - your results will not be shared with anyone",
+]
+
+# ---------- Score computation ----------
+
+def compute_scores_from_row(input_row: Dict[str, Any]) -> Dict[str, float]:
+    """
+    Computes DT/TR/CO/CA/EP scores as the mean of mapped Likert items.
+    Reverse-coded items are inverted as v' = 6 - v.
+    If a dimension has 0 valid responses, defaults to 3.0 (neutral).
+    """
+    buckets: Dict[str, List[float]] = {d: [] for d in DIMENSIONS}
+
+    for hdr, val in input_row.items():
+        ch = _canon_header(hdr)
+        if ch in ITEM_MAP:
+            dim, rev = ITEM_MAP[ch]
+            v = parse_likert(val)
+            if 1.0 <= v <= 5.0:
+                if rev:
+                    v = 6.0 - v
+                buckets[dim].append(v)
+
+    out: Dict[str, float] = {}
+    for d in DIMENSIONS:
+        arr = buckets[d]
+        if arr:
+            out[d] = _round2(sum(arr) / len(arr))
+        else:
+            out[d] = 3.00  # neutral fallback if no answers
+    return out
+
+# ---------- Per-row pipeline ----------
+
+def process_row(input_row: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Returns a completed output row including:
+      - pass-through identity fields (if present)
+      - DT/TR/CO/CA/EP scores (two decimals)
+      - five one-sentence interpretations
+      - 2 strengths + 3 development areas with score-in-title formatting
+      - first-name-only summary
+      - Radar_SVG column
+    Field order follows OUTPUT_SCHEMA_ANCHOR first, then any other fields.
+    """
+    # Pass-through identity
+    out: Dict[str, Any] = {}
+    for k in PASS_THROUGH_HEADERS:
+        if k in input_row:
+            out[k] = input_row.get(k)
+
+    # If scores are pre-provided, honour them; else compute
+    def _get_score_field(name: str) -> float:
+        raw = input_row.get(name, "")
+        try:
+            f = float(str(raw))
+            if 1.0 <= f <= 5.0:
+                return _round2(f)
+        except Exception:
+            pass
+        return float("nan")
+
+    provided_scores = {
+        "DT": _get_score_field("DT_Score"),
+        "TR": _get_score_field("TR_Score"),
+        "CO": _get_score_field("CO_Score"),
+        "CA": _get_score_field("CA_Score"),
+        "EP": _get_score_field("EP_Score"),
+    }
+
+    if any(math.isnan(v) for v in provided_scores.values()):
+        scores_by_dim = compute_scores_from_row(input_row)
+    else:
+        scores_by_dim = {d: _round2(provided_scores[d]) for d in DIMENSIONS}
+
+    # Store numeric scores (two decimals)
+    out["DT_Score"] = _round2(scores_by_dim["DT"])
+    out["TR_Score"] = _round2(scores_by_dim["TR"])
+    out["CO_Score"] = _round2(scores_by_dim["CO"])
+    out["CA_Score"] = _round2(scores_by_dim["CA"])
+    out["EP_Score"] = _round2(scores_by_dim["EP"])
+
+    # Narrative blocks + SVG
+    narratives = build_narratives_for_participant(input_row, scores_by_dim)
+    out.update(narratives)
+
+    # Final ordering
+    ordered_keys = order_output_fields(out)
+    return {k: out.get(k, "") for k in ordered_keys}
+
+# ---------- DataFrame/CSV/XLSX batch helpers (optional for local runs) ----------
+
+def _read_table(path: str) -> List[Dict[str, Any]]:
+    """
+    Lightweight loader that handles CSV or XLSX by extension.
+    Returns list of dict rows (header -> value).
+    """
+    import os
+    ext = os.path.splitext(path)[1].lower()
+    rows: List[Dict[str, Any]] = []
+    if ext in (".csv",):
+        import csv
+        with open(path, "r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                rows.append(dict(r))
+    elif ext in (".xlsx", ".xls"):
+        import pandas as pd  # optional dependency when run locally
+        df = pd.read_excel(path)
+        rows = df.to_dict(orient="records")
+    else:
+        raise ValueError(f"Unsupported file type: {ext}")
+    return rows
+
+def _write_table(path: str, rows: List[Dict[str, Any]]) -> None:
+    """
+    Writes CSV or XLSX based on extension. Output header order follows OUTPUT_SCHEMA_ANCHOR.
+    """
+    import os
+    ext = os.path.splitext(path)[1].lower()
+    # Determine union of keys, but anchor the schema-defined order first
+    if not rows:
+        raise ValueError("No rows to write.")
+    # Build a representative field order from the first row using our ordering rule
+    ordered_fields = order_output_fields(rows[0])
+
+    if ext in (".csv",):
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=ordered_fields, extrasaction="ignore")
+            writer.writeheader()
+            for r in rows:
+                writer.writerow({k: r.get(k, "") for k in ordered_fields})
+    elif ext in (".xlsx", ".xls"):
+        import pandas as pd
+        df = pd.DataFrame(rows, columns=ordered_fields)
+        df.to_excel(path, index=False)
+    else:
+        raise ValueError(f"Unsupported file type for writing: {ext}")
+
+def process_table(in_path: str, out_path: str) -> None:
+    rows = _read_table(in_path)
+    validate_headers(rows)
+    out_rows: List[Dict[str, Any]] = [process_row(r) for r in rows]
+    _write_table(out_path, out_rows)
+
+# ---------- Validators ----------
+
+def validate_headers(rows: List[Dict[str, Any]]) -> None:
+    """
+    Ensures that at least:
+      - Name or alternate-name field exists (for personalisation),
+      - At least one mapped item for each dimension is present in the header set,
+        unless all five *_Score columns are already provided.
+    Fails fast with a clear message if requirements are not met.
+    """
+    if not rows:
+        raise ValueError("Input is empty.")
+
+    hdrs = set(rows[0].keys())
+    has_name = ("Name" in hdrs) or any(h in hdrs for h in ALT_NAME_HEADERS)
+
+    # If all *_Score are present, we can proceed without items
+    has_all_scores = all(f"{d}_Score" in hdrs for d in DIMENSIONS)
+
+    # Build dimension coverage from ITEM_MAP against provided headers
+    canon_hdrs = {_canon_header(h) for h in hdrs}
+    dim_coverage: Dict[str, int] = {d: 0 for d in DIMENSIONS}
+    for ch, (dim, _rev) in ITEM_MAP.items():
+        if ch in canon_hdrs:
+            dim_coverage[dim] += 1
+
+    if not has_name:
+        raise ValueError("Missing name field. Expected 'Name' or the long name prompt field from your form.")
+
+    if not has_all_scores:
+        missing_dims = [d for d, cnt in dim_coverage.items() if cnt == 0]
+        if missing_dims:
+            raise ValueError(
+                f"Missing item columns for dimensions: {', '.join(missing_dims)}. "
+                f"Either include those survey items or provide precomputed *_Score columns."
+            )
+
+# ---------- Radar sanity (dimension order & angles) ----------
+
+def _sanity_check_radar() -> None:
+    # dimension set match
+    assert set(DIMENSIONS) == set(RADAR_ANGLES_DEG.keys()), "Radar angles must cover all dimensions."
+    # polygon is closed implicitly; also angle ordering must be stable
+    _ = [RADAR_ANGLES_DEG[d] for d in DIMENSIONS]  # access in fixed order, raises KeyError if missing
+
+_sanity_check_radar()
+
+# ---------- Golden sanity (non-executable in Claude unless invoked) ----------
+
+def _golden_sanity_example() -> Dict[str, Any]:
+    """
+    Minimal in-memory example to illustrate pipeline. Not executed unless you call it.
+    """
+    sample = {
+        "ID": 1,
+        "Name": "Olivia Singh",
+        "I prefer to be clear and direct, even if it risks offending someone": "Agree",
+        "I usually soften feedback to maintain harmony": "Disagree",
+        "I prioritise empathy and relationships over tasks when communicating": "Agree",
+        "I prefer to avoid confrontation and look for compromise": "Strongly Agree",
+        "I feel comfortable giving negative feedback to colleagues, regardless of their seniority": "Disagree",
+        "I consciously adapt my communication style when working with people from different cultures": "Agree",
+        "I actively try to see situations from others' cultural or personal perspectives": "Agree",
+        "I use empathy phrases like \"Help me understand...\" to encourage openness": "Agree",
+        "I notice non-verbal cues (tone, body language, expressions) that signal how others are feeling": "Neutral",
+        "I adjust my communication when I sense that someone is uncomfortable or not engaged": "Agree",
+        "I make an effort to understand what matters most to others before I share my own views": "Agree",
+    }
+    out = process_row(sample)
+    # Check first-name-only summary
+    assert " Olivia " not in out.get("Summary", ""), "Summary should use first name only, not full name."
+    assert "Singh" not in out.get("Summary", ""), "Summary must not include the full surname when full name is present."
+    # Check interpretation presence
+    for k in ["DT_Interpretation", "TR_Interpretation", "CO_Interpretation", "CA_Interpretation", "EP_Interpretation"]:
+        assert k in out and isinstance(out[k], str) and len(out[k]) > 0
+    # Check titles contain scores with 2 decimals
+    for k in ["Strength_1_Title", "Strength_2_Title", "Development_1_Title", "Development_2_Title", "Development_3_Title"]:
+        assert "(" in out[k] and out[k].rstrip(")").split("(")[-1].count(".") == 1
+    # SVG presence
+    assert out.get("Radar_SVG", "").startswith("<svg"), "Radar_SVG must be an SVG string."
+    return out
+
+# ---------- Version & Changelog ----------
+
+CHANGELOG = f"""
+{SPEC_VERSION}
+- Added five one-sentence interpretation columns (DT/TR/CO/CA/EP).
+- Strength/Development titles now strictly use 'Display Name (0.00)' with two decimals.
+- Summary uses first name only or lone surname; never uses the full name.
+- Deterministic score engine from survey items with reverse-coding where applicable.
+- Tight, padded radar SVG included as 'Radar_SVG' column; axis order aligned across system.
+"""
+
+# =========================
+# END PART 3 OF 3
+# =========================
