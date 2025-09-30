@@ -1,6 +1,12 @@
-# CCIP - Cross-Cultural Intelligence Profile
+# CCA Profiler
 
-Generate detailed Excel reports based on survey data with embedded visual elements like radar charts and icons.
+**CCA Profiler** is an evidence-based reflection tool designed to help participants identify and adapt their communication tendencies in diverse and multicultural workplaces.
+
+This report benchmarks your ability to recognise, respect, and adapt to cultural differences so you can communicate and work effectively across diverse settings. It does not mean being an expert in every culture.
+
+CCA emphasises staying consciously aware of your cultural surroundings, noticing the clues and cues in people's behaviours, communication styles, and expectations, and making informed judgments based on observations and facts rather than assumptions. At its core, CCA requires placing the interests, feelings, and cultural context of others alongside your own, recognising that what feels natural or "professional" in one culture may not be the same in another.
+
+While not a psychometric assessment, the CCA Profiler draws on established, research-backed frameworks in organisational psychology, intercultural communication, and leadership studies.
 
 ## Features
 
@@ -12,7 +18,7 @@ Generate detailed Excel reports based on survey data with embedded visual elemen
 ## Dimensions Analyzed
 
 - **DT**: Directness & Transparency
-- **TR**: Task vs Relational Accountability  
+- **TR**: Task vs Relational Accountability
 - **CO**: Conflict Orientation
 - **CA**: Cultural Adaptability
 - **EP**: Empathy & Perspective-Taking
@@ -45,11 +51,16 @@ streamlit run app.py
 
 ```bash
 # Build and run
-docker build -t ccip .
-docker run -p 8501:8501 ccip
+docker build -t cca-profiler .
+docker run -p 8501:8501 cca-profiler
 ```
 
 Then open http://localhost:8501 in your browser.
+
+## Configuration
+
+- `OPENAI_API_KEY` must be set as a Render environment variable (already done).
+- `APP_PASSWORD` (optional) protects the app; when set, a password prompt appears.
 
 ## Usage
 
@@ -61,7 +72,7 @@ python -m ccip --input survey_data.xlsx --output results.xlsx
 ### Web Interface
 1. Upload your survey Excel/CSV file
 2. Click "Process Survey Data"
-3. Download the generated CCIP report
+3. Download the generated CCA Profiler report
 
 ## Input Format
 
