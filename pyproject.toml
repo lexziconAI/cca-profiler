@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ccip"
+version = "1.0.0"
+description = "CCA / CCIP Composer - Cross-Cultural Intelligence Profile Report Generator"
+requires-python = ">=3.9"
+dependencies = [
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "Pillow>=10.3",
+    "XlsxWriter>=3.2",
+    "cairosvg>=2.7",
+]
+
+[project.scripts]
+ccip = "ccip.__main__:main"

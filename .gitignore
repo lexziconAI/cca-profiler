@@ -1,0 +1,14 @@
+.vscode/
+.streamlit/
+__pycache__/
+*.pyc
+venv/
+.env
+.env.*
+*.xlsx
+*.csv
+/data/
+/tmp/
+/dist/
+/build/
+.DS_Store
