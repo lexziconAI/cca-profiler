@@ -209,6 +209,100 @@ def detect_survey_columns(df: pd.DataFrame) -> Tuple[Optional[int], Optional[int
     return None, None
 
 
+def detect_name_column(df: pd.DataFrame) -> Optional[str]:
+    """
+    Detect name column by searching headers with flexible matching.
+
+    Priority:
+    1. Column header containing "please type your name" (partial, case-insensitive)
+    2. Column header exactly matching "name" (case-insensitive)
+
+    Returns: Column name (str) or None if not found
+    """
+    # Priority 1: Survey field with partial match
+    for col in df.columns:
+        col_str = str(col).lower().strip()
+        if "please type your name" in col_str:
+            logger.info(f"Name column detected: '{col}' (survey field)")
+            return col
+
+    # Priority 2: Standard "Name" column
+    for col in df.columns:
+        col_str = str(col).lower().strip()
+        if col_str == "name":
+            logger.info(f"Name column detected: '{col}' (metadata)")
+            return col
+
+    logger.warning("No name column detected")
+    return None
+
+
+def detect_email_column(df: pd.DataFrame) -> Optional[str]:
+    """
+    Detect email column by searching headers with flexible matching.
+
+    Priority:
+    1. Column header containing "please type your email" (partial, case-insensitive)
+    2. Column header exactly matching "email" (case-insensitive)
+
+    Returns: Column name (str) or None if not found
+    """
+    # Priority 1: Survey field with partial match
+    for col in df.columns:
+        col_str = str(col).lower().strip()
+        if "please type your email" in col_str:
+            logger.info(f"Email column detected: '{col}' (survey field)")
+            return col
+
+    # Priority 2: Standard "Email" column
+    for col in df.columns:
+        col_str = str(col).lower().strip()
+        if col_str == "email":
+            logger.info(f"Email column detected: '{col}' (metadata)")
+            return col
+
+    logger.warning("No email column detected")
+    return None
+
+
+def is_valid_email(email_value) -> bool:
+    """
+    Validate email value for participant identification.
+
+    Accepts:
+    - Valid email addresses (contains @ with text before and after)
+    - "anonymous" (Microsoft auto-fill when not logged in)
+
+    Rejects:
+    - None/NaN/blank values
+    - Invalid strings: "nan", "none", "n/a"
+    - Malformed emails: "@example.com", "user@", etc.
+
+    Returns: True if usable for identification, False otherwise
+    """
+    if pd.isna(email_value):
+        return False
+
+    email_str = str(email_value).strip().lower()
+
+    if not email_str or email_str in ['', 'nan', 'none', 'n/a']:
+        return False
+
+    # "anonymous" is valid (Microsoft behavior when not logged in)
+    if email_str == 'anonymous':
+        return True
+
+    # Otherwise must contain @ with text before and after
+    if '@' not in email_str:
+        return False
+
+    parts = email_str.split('@')
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return False
+
+    return True
+
+
 def parse_likert_response(value) -> Optional[int]:
     """
     STRICT 5-point Likert parser: returns 1..5 or None.
@@ -432,29 +526,41 @@ def _parse_start_time_to_date(start_time_series: pd.Series, src_path: Optional[s
     return pd.Series(formatted_dates, name='Date')
 
 
-def process_survey_row(row: pd.Series, start_idx: int, end_idx: int) -> Dict:
+def process_survey_row(row: pd.Series, start_idx: int, end_idx: int,
+                      name_col: Optional[str] = None,
+                      email_col: Optional[str] = None) -> Dict:
     """
     Process a single survey response row.
-    Returns dict with ID, Email, Date, responses, and dimension scores.
+
+    Args:
+        row: DataFrame row with survey responses
+        start_idx: Starting column index for Q1
+        end_idx: Ending column index for Q25
+        name_col: Detected name column name (optional)
+        email_col: Detected email column name (optional)
+
+    Returns:
+        Dict with ID, Email, Name, Date, responses, scores
     """
     result = {
         'ID': row.get('ID'),
-        'Email': row.get('Email'),
+        'Email': row.get(email_col) if email_col else None,
+        'Name': row.get(name_col) if name_col else None,
         'Date': parse_date(row.get('Date')),
         'responses': [],
         'scores': {}
     }
-    
-    # Extract survey responses
+
+    # Extract survey responses (Q1-Q25)
     for i in range(start_idx, min(end_idx + 1, len(row))):
         val = parse_likert_response(row.iloc[i])
         result['responses'].append(val)
-    
+
     # Ensure we have exactly 25 responses (pad with None if needed)
     while len(result['responses']) < 25:
         result['responses'].append(None)
-    
+
     # Calculate dimension scores
     result['scores'] = calculate_dimension_scores(result['responses'])
-    
+
     return result

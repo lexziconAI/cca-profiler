@@ -304,46 +304,82 @@ def select_reflection_questions(priority_dims: List[str], participant_id: str, a
 
 def extract_display_name(name_field: str, email_field: str) -> str:
     """
-    Extract display name with intelligent email parsing.
+    Extract display name with intelligent fallback logic and proper capitalization.
 
-    Rules:
-    1. Use Name field if present and valid
-    2. Parse email local part (before @):
-       - If separators exist (. _ -): Choose LONGEST part
-       - If no separators: Use entire local part capitalized
+    Priority cascade:
+    1. Name field if valid → Apply title case (Brian Smith)
+    2. Email = "anonymous" → Return "Anonymous"
+    3. Parse email local part → Capitalize first letter
+    4. Final fallback → "Anonymous"
+
+    Email parsing rules:
+    - If separators exist (. _ -): Extract LONGEST segment
+    - If no separators: Use entire local part
 
     Examples:
-    - penny.ds@gmail.com → "Penny"
-    - ds_penny@gmail.com → "Penny"
-    - brian.p@company.com → "Brian"
-    - reganduffnz@gmail.com → "Reganduffnz"
+        ("brian smith", any) → "Brian Smith" (title case)
+        ("SARAH JONES", any) → "Sarah Jones" (title case)
+        ("o'connor", any) → "O'Connor" (title case)
+        (blank, "penny.ds@gmail.com") → "Penny"
+        (blank, "ds_penny@gmail.com") → "Penny"
+        (blank, "sarah-m@site.org") → "Sarah"
+        (blank, "reganduffnz@gmail.com") → "Reganduffnz"
+        (blank, "anonymous") → "Anonymous"
+        (blank, blank) → "Anonymous"
+
+    Args:
+        name_field: Value from name column (may be None/blank)
+        email_field: Value from email column (may be None/blank/anonymous)
+
+    Returns:
+        Display name string (never empty, always properly capitalized)
     """
     import pandas as pd
 
-    # Priority 1: Use Name field if valid
+    # Priority 1: Use Name field if valid (with proper title casing)
     if (name_field and
         not pd.isna(name_field) and
         str(name_field).strip() and
         str(name_field).strip().lower() not in ['nan', 'none', '', 'n/a']):
-        return str(name_field).strip()
+        # Apply title case: "brian smith" → "Brian Smith"
+        return str(name_field).strip().title()
 
-    # Priority 2: Parse email
-    if not email_field or pd.isna(email_field) or '@' not in str(email_field):
-        return "Participant"
+    # Priority 2: Check if email is "anonymous"
+    if email_field and not pd.isna(email_field):
+        email_str = str(email_field).strip().lower()
+        if email_str == 'anonymous':
+            return "Anonymous"
 
-    local_part = str(email_field).split('@')[0].strip()
+    # Priority 3: Parse valid email
+    if not email_field or pd.isna(email_field):
+        return "Anonymous"
 
-    # Check for separators
+    email_str = str(email_field).strip().lower()
+
+    # Check for invalid patterns
+    if email_str in ['', 'nan', 'none', 'n/a'] or '@' not in email_str:
+        return "Anonymous"
+
+    # Extract local part (before @)
+    local_part = email_str.split('@')[0].strip()
+
+    # Check for separators and extract longest segment
+    # Split by ALL separators at once to handle mixed cases like "sarah.j-smith"
     separators = ['.', '_', '-']
-    for sep in separators:
-        if sep in local_part:
-            # Split and find longest part
-            parts = [p.strip() for p in local_part.split(sep) if p.strip()]
-            if parts:
-                longest = max(parts, key=len)
-                return longest.capitalize()
 
-    # No separators: use whole local part
+    # Replace all separators with a common delimiter, then split
+    temp = local_part
+    for sep in separators:
+        temp = temp.replace(sep, '|')
+
+    parts = [p.strip() for p in temp.split('|') if p.strip()]
+
+    if len(parts) > 1:
+        # Multiple segments found - return longest
+        longest = max(parts, key=len)
+        return longest.capitalize()
+
+    # No separators: use whole local part, capitalized
     return local_part.capitalize()
 
 
@@ -727,9 +763,25 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
     enhanced_df = survey_df.copy()
     enhanced_df['Date'] = date_series
 
+    # Detect name and email columns flexibly
+    from .ccip_intake import detect_name_column, detect_email_column, is_valid_email
+
+    name_col = detect_name_column(survey_df)
+    email_col = detect_email_column(survey_df)
+
+    if name_col:
+        logger.info(f"Using name column: '{name_col}'")
+    else:
+        logger.warning("No name column found - will use email parsing or 'Anonymous' fallback")
+
+    if email_col:
+        logger.info(f"Using email column: '{email_col}'")
+    else:
+        logger.warning("No email column found - will use 'Anonymous' fallback")
+
     # Create output dataframe with required columns
     output_data = []
-    
+
     # Create temp directory for images
     temp_dir = Path(tempfile.mkdtemp(prefix="ccip_"))
     logger.info(f"Created temp directory: {temp_dir}")
@@ -737,12 +789,19 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
     try:
         # Process each survey row
         for idx, row in enhanced_df.iterrows():
-            # Skip rows without valid ID and Email
-            if pd.isna(row.get('ID')) or pd.isna(row.get('Email')):
+            # Extract name/email from detected columns
+            name_value = row.get(name_col) if name_col else None
+            email_value = row.get(email_col) if email_col else None
+
+            # Skip rows without valid email for identification
+            if not is_valid_email(email_value):
+                logger.debug(f"Skipping row {idx}: invalid or missing email")
                 continue
-            
-            # Process survey responses
-            processed = process_survey_row(row, start_idx, end_idx)
+
+            # Process survey responses with detected column names
+            processed = process_survey_row(row, start_idx, end_idx,
+                                          name_col=name_col,
+                                          email_col=email_col)
             scores_raw_1_5 = processed['scores']
             if not any(v is not None for v in scores_raw_1_5.values()):
                 continue
@@ -766,10 +825,7 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
             out_row["ID"] = processed['ID']
             out_row["Email"] = processed['Email']
             out_row["Date"] = row['Date']  # Use derived date directly
-            out_row["Name"] = extract_display_name(
-                row.get('Name'),
-                row.get('Email')
-            )
+            out_row["Name"] = extract_display_name(name_value, email_value)
             # NOTE: Organisation, Level, Level Icon, Primary Focus Area not in locked schema
 
             # Score fields
