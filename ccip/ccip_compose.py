@@ -19,16 +19,16 @@ logger = logging.getLogger(__name__)
 # Dimension order
 DIM_ORDER = ["DT", "TR", "CO", "CA", "EP"]
 
-# LOCKED OUTPUT SCHEMA - authoritative; no extras (42 columns)
+# LOCKED OUTPUT SCHEMA - authoritative; no extras (48 columns)
 REQUIRED_COLUMNS = [
     "Date", "ID", "Name", "Email",
     "DT_Score", "TR_Score", "CO_Score", "CA_Score", "EP_Score",
-    "KS1_Icon", "KS1_Title", "KS1_Body",
-    "KS2_Icon", "KS2_Title", "KS2_Body",
-    "KS3_Icon", "KS3_Title", "KS3_Body",
-    "DA1_Icon", "DA1_Title", "DA1_Body",
-    "DA2_Icon", "DA2_Title", "DA2_Body",
-    "DA3_Icon", "DA3_Title", "DA3_Body",
+    "KS1_Icon", "KS1_Line", "KS1_Title", "KS1_Body",
+    "KS2_Icon", "KS2_Line", "KS2_Title", "KS2_Body",
+    "KS3_Icon", "KS3_Line", "KS3_Title", "KS3_Body",
+    "DA1_Icon", "DA1_Line", "DA1_Title", "DA1_Body",
+    "DA2_Icon", "DA2_Line", "DA2_Title", "DA2_Body",
+    "DA3_Icon", "DA3_Line", "DA3_Title", "DA3_Body",
     "PR1_Icon", "PR1_Title", "PR1_Body",
     "PR2_Icon", "PR2_Title", "PR2_Body",
     "PR3_Icon", "PR3_Title", "PR3_Body",
@@ -248,41 +248,103 @@ def sentences_to_newlines(text: str) -> str:
     return '\n'.join(sentence.strip() for sentence in sentences if sentence.strip())
 
 
-def select_reflection_questions(priority_dims: List[str], participant_id: str) -> List[str]:
+def select_reflection_questions(priority_dims: List[str], participant_id: str, all_scores: Dict[str, float]) -> List[str]:
     """
-    Select reflection questions using round-robin from priority dimensions + general pool.
+    Select 4 reflection questions guaranteed.
 
-    RQ1: First priority dimension
-    RQ2: Second priority dimension
-    RQ3: Third priority dimension
+    Logic:
+    RQ1-3: Priority dimensions (dev areas), then other dimensions by score
     RQ4: General pool
-
-    Uses participant_id for deterministic selection within each pool.
     """
     questions = []
+    used_dims = set()
 
-    # RQ1-RQ3: Select from priority dimensions
-    for i in range(3):
-        if i < len(priority_dims):
-            dim = priority_dims[i]
+    # Step 1: Fill from priority dimensions (dev areas)
+    for dim in priority_dims[:3]:
+        dim_questions = REFLECTION_QUESTIONS_DIM.get(dim, [])
+        if dim_questions:
+            idx = hash(f"{participant_id}_{dim}") % len(dim_questions)
+            questions.append(dim_questions[idx])
+            used_dims.add(dim)
+
+    # Step 2: Fill remaining RQ1-3 slots from other dimensions (lowest scores first)
+    if len(questions) < 3:
+        # Get remaining dimensions sorted by score
+        remaining = [(dim, score) for dim, score in all_scores.items()
+                     if dim not in used_dims and score is not None]
+        remaining.sort(key=lambda x: x[1])  # Lowest scores first
+
+        for dim, score in remaining:
+            if len(questions) >= 3:
+                break
             dim_questions = REFLECTION_QUESTIONS_DIM.get(dim, [])
             if dim_questions:
-                # Use participant_id hash for deterministic selection
                 idx = hash(f"{participant_id}_{dim}") % len(dim_questions)
                 questions.append(dim_questions[idx])
-            else:
-                questions.append("")
-        else:
-            questions.append("")
+                used_dims.add(dim)
 
-    # RQ4: Select from general pool
+    # Step 3: Pad with general questions if still short
+    while len(questions) < 3 and REFLECTION_QUESTIONS_GENERAL:
+        idx = hash(f"{participant_id}_general_{len(questions)}") % len(REFLECTION_QUESTIONS_GENERAL)
+        questions.append(REFLECTION_QUESTIONS_GENERAL[idx])
+
+    # Step 4: RQ4 always from general pool
     if REFLECTION_QUESTIONS_GENERAL:
         idx = hash(f"{participant_id}_general") % len(REFLECTION_QUESTIONS_GENERAL)
         questions.append(REFLECTION_QUESTIONS_GENERAL[idx])
     else:
         questions.append("")
 
-    return questions
+    # Guarantee exactly 4 questions
+    while len(questions) < 4:
+        questions.append("No reflection question available for this slot.")
+
+    return questions[:4]
+
+
+def extract_display_name(name_field: str, email_field: str) -> str:
+    """
+    Extract display name with intelligent email parsing.
+
+    Rules:
+    1. Use Name field if present and valid
+    2. Parse email local part (before @):
+       - If separators exist (. _ -): Choose LONGEST part
+       - If no separators: Use entire local part capitalized
+
+    Examples:
+    - penny.ds@gmail.com → "Penny"
+    - ds_penny@gmail.com → "Penny"
+    - brian.p@company.com → "Brian"
+    - reganduffnz@gmail.com → "Reganduffnz"
+    """
+    import pandas as pd
+
+    # Priority 1: Use Name field if valid
+    if (name_field and
+        not pd.isna(name_field) and
+        str(name_field).strip() and
+        str(name_field).strip().lower() not in ['nan', 'none', '', 'n/a']):
+        return str(name_field).strip()
+
+    # Priority 2: Parse email
+    if not email_field or pd.isna(email_field) or '@' not in str(email_field):
+        return "Participant"
+
+    local_part = str(email_field).split('@')[0].strip()
+
+    # Check for separators
+    separators = ['.', '_', '-']
+    for sep in separators:
+        if sep in local_part:
+            # Split and find longest part
+            parts = [p.strip() for p in local_part.split(sep) if p.strip()]
+            if parts:
+                longest = max(parts, key=len)
+                return longest.capitalize()
+
+    # No separators: use whole local part
+    return local_part.capitalize()
 
 
 def one_dp_half_up(score: float) -> str:
@@ -338,7 +400,7 @@ def get_band(score: float) -> str:
 
 
 def format_score_cell(score: float, dim: str) -> str:
-    """Format score cell with interpretation."""
+    """Format score cell with band name and interpretation."""
     if score is None:
         return "N/A"
 
@@ -348,7 +410,8 @@ def format_score_cell(score: float, dim: str) -> str:
     if not interp:
         interp = "Score interpretation not available"
 
-    return f"{score:.2f} — {interp}"
+    # NEW FORMAT: score (band) - interpretation
+    return f"{score:.2f} ({band}) - {interp}"
 
 
 def build_scores_with_bands(scores: Dict[str, float]) -> List[Tuple[str, float, str]]:
@@ -390,8 +453,10 @@ def format_body_to_three_lines(text: str) -> str:
 
 def select_key_strengths(scores: Dict[str, float]) -> List[Tuple[str, str, str, str]]:
     """
-    Select top 3 key strengths (High/Very High only).
+    Select key strengths (High/Very High only).
     Returns list of (dim, icon_key, title, body) tuples.
+    Only KS1 gets placeholder if no real strengths exist.
+    KS2/KS3 return empty tuples if no real items.
     """
     scores_with_bands = build_scores_with_bands(scores)
 
@@ -404,32 +469,32 @@ def select_key_strengths(scores: Dict[str, float]) -> List[Tuple[str, str, str, 
 
     result = []
     for dim, score, band in ks_candidates[:3]:
-        icon_key = "LEVEL_SHIELD"  # Real KS items use shield
+        icon_key = "LEVEL_SHIELD"
         title = f"{DIMENSION_LABELS[dim]} - {one_dp_half_up(score)}"
         body_text = KS_TEXTS.get(dim, {}).get(band, "")
         body = format_body_to_three_lines(body_text)
         result.append((dim, icon_key, title, body))
 
-    # Check if all placeholders
-    all_placeholders = len(result) == 0
-
-    # Pad with placeholders
-    while len(result) < 3:
-        icon_key = "LEVEL_TOOLS"  # Placeholders use tools
-        if all_placeholders:
-            title = "No key strengths were identified."
-        else:
-            title = "No additional key strengths were identified."
+    # Only pad KS1 with placeholder if needed
+    if len(result) == 0:
+        icon_key = "LEVEL_TOOLS"
+        title = "No key strengths were identified."
         body = "This reflects limited positive signals in this cycle, interpret with caution."
         result.append(("", icon_key, title, body))
+
+    # Pad remaining slots with empty tuples (will create blank cells)
+    while len(result) < 3:
+        result.append(("", "", "", ""))
 
     return result
 
 
 def select_development_areas(scores: Dict[str, float]) -> List[Tuple[str, str, str, str]]:
     """
-    Select top 3 development areas (Developing/Low only).
+    Select development areas (Developing/Low only).
     Returns list of (dim, icon_key, title, body) tuples.
+    Only DA1 gets placeholder if no real areas exist.
+    DA2/DA3 return empty tuples if no real items.
     """
     scores_with_bands = build_scores_with_bands(scores)
 
@@ -442,7 +507,6 @@ def select_development_areas(scores: Dict[str, float]) -> List[Tuple[str, str, s
 
     result = []
     for dim, score, band in da_candidates[:3]:
-        # DA icon logic: Developing -> SEEDLING, Low/Limited -> TOOLS
         if band == "Developing":
             icon_key = "LEVEL_SEEDLING"
         else:  # Low / Limited
@@ -453,18 +517,16 @@ def select_development_areas(scores: Dict[str, float]) -> List[Tuple[str, str, s
         body = format_body_to_three_lines(body_text)
         result.append((dim, icon_key, title, body))
 
-    # Check if all placeholders
-    all_placeholders = len(result) == 0
-
-    # Pad with placeholders
-    while len(result) < 3:
-        icon_key = "LEVEL_TOOLS"  # Placeholders use tools
-        if all_placeholders:
-            title = "No developmental areas were identified."
-        else:
-            title = "No additional developmental areas were identified."
+    # Only pad DA1 with placeholder if needed
+    if len(result) == 0:
+        icon_key = "LEVEL_TOOLS"
+        title = "No developmental areas were identified."
         body = "This reflects limited positive signals in this cycle, interpret with caution."
         result.append(("", icon_key, title, body))
+
+    # Pad remaining slots with empty tuples
+    while len(result) < 3:
+        result.append(("", "", "", ""))
 
     return result
 
@@ -704,7 +766,10 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
             out_row["ID"] = processed['ID']
             out_row["Email"] = processed['Email']
             out_row["Date"] = row['Date']  # Use derived date directly
-            out_row["Name"] = row.get('Name', '')
+            out_row["Name"] = extract_display_name(
+                row.get('Name'),
+                row.get('Email')
+            )
             # NOTE: Organisation, Level, Level Icon, Primary Focus Area not in locked schema
 
             # Score fields
@@ -720,13 +785,15 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
 
             # KS items (dim, icon_key, title, body)
             for i, (dim, icon_key, title, body) in enumerate(ks_items, 1):
-                out_row[f"KS{i}_Icon"] = ""  # Will be filled with image
+                out_row[f"KS{i}_Icon"] = ""  # Will be filled with level icon image
+                out_row[f"KS{i}_Line"] = ""  # Will be filled with line icon image
                 out_row[f"KS{i}_Title"] = title
                 out_row[f"KS{i}_Body"] = sentences_to_newlines(body)
 
             # DA items (dim, icon_key, title, body)
             for i, (dim, icon_key, title, body) in enumerate(da_items, 1):
-                out_row[f"DA{i}_Icon"] = ""  # Will be filled with image
+                out_row[f"DA{i}_Icon"] = ""  # Will be filled with level icon image
+                out_row[f"DA{i}_Line"] = ""  # Will be filled with line icon image
                 out_row[f"DA{i}_Title"] = title
                 out_row[f"DA{i}_Body"] = sentences_to_newlines(body)
 
@@ -739,7 +806,7 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
             # RQ fields: Reflection questions based on priority dimensions
             priority_dims = _dev_priority_dims(scores)
             participant_id = str(processed['ID']) if processed['ID'] is not None else ""
-            reflection_questions = select_reflection_questions(priority_dims, participant_id)
+            reflection_questions = select_reflection_questions(priority_dims, participant_id, scores)
 
             out_row["RQ1"] = reflection_questions[0] if len(reflection_questions) > 0 else ""
             out_row["RQ2"] = reflection_questions[1] if len(reflection_questions) > 1 else ""
@@ -788,21 +855,25 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
                 'valign': 'top'
             })
 
-            # KS block: Icon/Title/Body
+            # KS block: Icon/Line/Title/Body
             for i in range(1, 4):
                 icon_col = COL[f"KS{i}_Icon"]
+                line_col = COL[f"KS{i}_Line"]
                 title_col = COL[f"KS{i}_Title"]
                 body_col = COL[f"KS{i}_Body"]
-                worksheet.set_column(icon_col, icon_col, 12)  # Icon
+                worksheet.set_column(icon_col, icon_col, 12)  # Level icon
+                worksheet.set_column(line_col, line_col, 8)   # Line icon
                 worksheet.set_column(title_col, title_col, 28)  # Title
                 worksheet.set_column(body_col, body_col, 36)  # Body
 
-            # DA block: Icon/Title/Body
+            # DA block: Icon/Line/Title/Body
             for i in range(1, 4):
                 icon_col = COL[f"DA{i}_Icon"]
+                line_col = COL[f"DA{i}_Line"]
                 title_col = COL[f"DA{i}_Title"]
                 body_col = COL[f"DA{i}_Body"]
-                worksheet.set_column(icon_col, icon_col, 12)  # Icon
+                worksheet.set_column(icon_col, icon_col, 12)  # Level icon
+                worksheet.set_column(line_col, line_col, 8)   # Line icon
                 worksheet.set_column(title_col, title_col, 28)  # Title
                 worksheet.set_column(body_col, body_col, 36)  # Body
 
@@ -865,19 +936,37 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
 
                 # NOTE: Level_Icon removed from locked schema
 
-                # KS icons - STRICT: Real dimension → LEVEL_SHIELD, Placeholder → LEVEL_TOOLS
+                # KS icons - Level + Line
                 for i, (dim, icon_key, title, body) in enumerate(ks_items, 1):
-                    col_key = f"KS{i}_Icon"
-                    if col_key in COL:
-                        safe_render_and_embed_icon(worksheet, excel_row, COL[col_key],
-                                                  icon_key, temp_dir, f"ks{i}", scale=1.0)
+                    # Level icon (shield/tools/seedling)
+                    if icon_key:  # Only if not empty
+                        level_col = f"KS{i}_Icon"
+                        if level_col in COL:
+                            safe_render_and_embed_icon(worksheet, excel_row, COL[level_col],
+                                                      icon_key, temp_dir, f"ks{i}_level", scale=1.0)
 
-                # DA icons - STRICT: Developing → LEVEL_SEEDLING, Low/Limited or placeholder → LEVEL_TOOLS
+                    # Line icon (horizontal separator)
+                    if title:  # Only if there's content
+                        line_col = f"KS{i}_Line"
+                        if line_col in COL:
+                            safe_render_and_embed_icon(worksheet, excel_row, COL[line_col],
+                                                      "LINE_ICON", temp_dir, f"ks{i}_line", scale=1.0)
+
+                # DA icons - Level + Line
                 for i, (dim, icon_key, title, body) in enumerate(da_items, 1):
-                    col_key = f"DA{i}_Icon"
-                    if col_key in COL:
-                        safe_render_and_embed_icon(worksheet, excel_row, COL[col_key],
-                                                  icon_key, temp_dir, f"da{i}", scale=1.0)
+                    # Level icon (shield/seedling/tools)
+                    if icon_key:  # Only if not empty
+                        level_col = f"DA{i}_Icon"
+                        if level_col in COL:
+                            safe_render_and_embed_icon(worksheet, excel_row, COL[level_col],
+                                                      icon_key, temp_dir, f"da{i}_level", scale=1.0)
+
+                    # Line icon (horizontal separator)
+                    if title:  # Only if there's content
+                        line_col = f"DA{i}_Line"
+                        if line_col in COL:
+                            safe_render_and_embed_icon(worksheet, excel_row, COL[line_col],
+                                                      "LINE_ICON", temp_dir, f"da{i}_line", scale=1.0)
 
                 # Radar chart - extract scores in order [DT, TR, CO, CA, EP]
                 participant_scores = []

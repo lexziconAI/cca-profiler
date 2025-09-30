@@ -32,16 +32,16 @@ class TestCCIPSmoke(unittest.TestCase):
         ]
         
         data = [
-            # Participant 1: High scores
-            ["1", "user1@example.com", "2024-01-01", "Alice Smith", "Axiom Inc", 
+            # Participant 1: High scores (Strongly Agree = 5)
+            ["1", "user1@example.com", "2024-01-01", "Alice Smith", "Axiom Inc",
              "Manager", "Leadership",
-             "6", "2", "6", "5", "6",  # Q1-5 (note Q2 will be reversed)
-             "5", "3", "6", "5", "5",  # Q6-10
-             "2", "4", "5", "6", "6",  # Q11-15 (note Q11 will be reversed)
-             "6", "5", "6", "5", "5",  # Q16-20
-             "5", "6", "5", "6", "5"   # Q21-25
+             "5", "2", "5", "5", "5",  # Q1-5 (note Q2 will be reversed)
+             "5", "3", "5", "5", "5",  # Q6-10
+             "2", "4", "5", "5", "5",  # Q11-15 (note Q11 will be reversed)
+             "5", "5", "5", "5", "5",  # Q16-20
+             "5", "5", "5", "5", "5"   # Q21-25
             ],
-            # Participant 2: Mixed scores
+            # Participant 2: Mixed scores (Neutral = 3, Agree = 4)
             ["2", "user2@example.com", "2024-01-02", "Bob Jones", "Tech Corp",
              "Individual Contributor", "Technical",
              "4", "4", "3", "4", "4",  # Q1-5
@@ -50,13 +50,13 @@ class TestCCIPSmoke(unittest.TestCase):
              "4", "4", "3", "4", "4",  # Q16-20
              "3", "4", "4", "3", "4"   # Q21-25
             ],
-            # Participant 3: Low scores
+            # Participant 3: Low scores (Strongly Disagree = 1, Disagree = 2)
             ["3", "user3@example.com", "2024-01-03", "Carol White", "Global Ltd",
              "Executive", "Strategy",
-             "2", "6", "2", "2", "3",  # Q1-5 (Q2 reversed becomes 2)
-             "3", "6", "2", "3", "2",  # Q6-10
-             "6", "5", "3", "2", "2",  # Q11-15 (Q11 reversed becomes 2)
-             "2", "6", "2", "3", "3",  # Q16-20
+             "2", "5", "2", "2", "3",  # Q1-5 (Q2 reversed: 5→2)
+             "3", "5", "2", "3", "2",  # Q6-10
+             "5", "5", "3", "2", "2",  # Q11-15 (Q11 reversed: 5→2)
+             "2", "5", "2", "3", "3",  # Q16-20
              "3", "5", "2", "2", "2"   # Q21-25
             ]
         ]
@@ -113,14 +113,19 @@ class TestCCIPSmoke(unittest.TestCase):
         # Check we have 3 rows
         self.assertEqual(len(result_df), 3, "Should have 3 participant rows")
 
-        # Check score formatting (2 decimals)
+        # Check score formatting (2 decimals with band name)
+        # New format: "4.75 (Very High) - interpretation..."
         for idx, row in result_df.iterrows():
             for col in ['DT_Score', 'TR_Score', 'CO_Score', 'CA_Score', 'EP_Score']:
                 score_str = str(row[col])
                 if score_str != 'N/A' and ' - ' in score_str:
-                    score_part = score_str.split(' - ')[0]
-                    self.assertRegex(score_part, r'^\d+\.\d{2}$',
-                                   f"Score should have 2 decimals: {score_part}")
+                    score_part = score_str.split(' - ')[0]  # e.g., "4.75 (Very High)"
+                    # Extract just the numeric part before the parenthesis
+                    numeric_part = score_part.split(' (')[0]
+                    self.assertRegex(numeric_part, r'^\d+\.\d{2}$',
+                                   f"Score should have 2 decimals: {numeric_part}")
+                    # Verify band name is present
+                    self.assertIn(' (', score_str, f"Score should contain band name: {score_str}")
 
         # Check Summary column exists and has content
         self.assertIn('Summary', result_df.columns, "Summary column should exist")
