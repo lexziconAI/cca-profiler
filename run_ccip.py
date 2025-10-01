@@ -8,6 +8,7 @@ Usage:
 
 import sys
 import logging
+import zipfile
 import pandas as pd
 from pathlib import Path
 from ccip.ccip_compose import compose_workbook
@@ -53,19 +54,43 @@ def main():
         print(f"Generating CCIP report...")
         success = compose_workbook(df, output_file, start_idx, end_idx, str(input_file))
 
-        if success:
-            print(f"✅ SUCCESS: CCIP report generated at '{output_file}'")
-
-            # Show summary
-            result_df = pd.read_excel(output_file, sheet_name='CCIP Results')
-            print(f"📊 Report contains {len(result_df)} participants")
-            print(f"📋 Columns included: {', '.join(result_df.columns[:8])}...")
-
-        else:
+        if not success:
+            logging.error(f"compose_workbook returned False for file: {input_file}")
             print("❌ FAILED: Could not generate CCIP report")
             sys.exit(1)
 
+        # Defensive check: Verify file exists AND is not empty
+        if not output_file.exists():
+            logging.error(f"compose_workbook returned True but file missing: {output_file}")
+            print("❌ FAILED: File generation failed. Please check that your survey data has all 25 required questions.")
+            sys.exit(1)
+
+        if output_file.stat().st_size == 0:
+            logging.error(f"compose_workbook created empty file: {output_file}")
+            print("❌ FAILED: Generated file is empty. Please check your input data.")
+            sys.exit(1)
+
+        print(f"✅ SUCCESS: CCIP report generated at '{output_file}'")
+
+        # Show summary
+        result_df = pd.read_excel(output_file, sheet_name='CCIP Results')
+        print(f"📊 Report contains {len(result_df)} participants")
+        print(f"📋 Columns included: {', '.join(result_df.columns[:8])}...")
+
+    except PermissionError as e:
+        logging.error(f"PermissionError: {e}")
+        print("❌ ERROR: File is locked. Please close the file in Excel and try again.")
+        sys.exit(1)
+    except pd.errors.EmptyDataError as e:
+        logging.error(f"EmptyDataError: {e}")
+        print("❌ ERROR: The file appears to be empty or corrupted.")
+        sys.exit(1)
+    except zipfile.BadZipFile as e:
+        logging.error(f"BadZipFile error: {e}")
+        print("❌ ERROR: File is corrupted or still open in Excel. Please close and try again.")
+        sys.exit(1)
     except Exception as e:
+        logging.error(f"Unexpected error: {e}", exc_info=True)
         print(f"❌ ERROR: {e}")
         sys.exit(1)
 

@@ -1,13 +1,25 @@
 import io
+import logging
 import os
 import tempfile
+import zipfile
 from pathlib import Path
 
 import pandas as pd
+from pandas.errors import EmptyDataError
 import streamlit as st
 
 from ccip.ccip_compose import compose_workbook
 from ccip.ccip_intake import detect_survey_columns
+
+# Add defensive import for openpyxl exception
+try:
+    from openpyxl.utils.exceptions import InvalidFileException
+except ImportError:
+    InvalidFileException = type("InvalidFileException", (Exception,), {})
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 st.set_page_config(page_title="CCA Profiler", page_icon="🌍")
 
@@ -72,7 +84,7 @@ When you submit this form, it will not automatically collect your details like n
 uploaded = st.file_uploader(
     "Upload survey data (Excel/CSV)",
     type=["xlsx", "xls", "csv"],
-    help="Upload an Excel or CSV file containing survey responses"
+    help="Upload an Excel or CSV file containing survey responses. ⚠️ Please close the file in Excel before uploading."
 )
 
 if uploaded:
@@ -82,11 +94,24 @@ if uploaded:
     if st.button("🚀 Process Survey Data", type="primary"):
         try:
             with st.spinner("Processing survey data..."):
-                # Read input to DataFrame
-                if uploaded.name.lower().endswith(".csv"):
-                    df = pd.read_csv(uploaded)
-                else:
-                    df = pd.read_excel(uploaded)
+                # Read input file with specific error handling
+                try:
+                    if uploaded.name.lower().endswith(".csv"):
+                        df = pd.read_csv(uploaded)
+                    else:
+                        df = pd.read_excel(uploaded)
+                except PermissionError as e:
+                    logger.error(f"Upload PermissionError (likely open in Excel): {e}")
+                    st.error("❌ Upload failed. Please **close the file in Excel**, save it, then try again.")
+                    st.stop()
+                except EmptyDataError as e:
+                    logger.error(f"Upload EmptyDataError: {e}")
+                    st.error("❌ Upload failed. The file appears to be **empty or corrupted**.")
+                    st.stop()
+                except (InvalidFileException, zipfile.BadZipFile) as e:
+                    logger.error(f"Upload invalid/corrupt Excel (BadZipFile): {e}")
+                    st.error("❌ Upload failed. The file is **locked, corrupted, or still open in Excel**. Please close it, save it, and try again.")
+                    st.stop()
 
                 st.info(f"Loaded {len(df)} rows from input file")
 
@@ -106,7 +131,19 @@ if uploaded:
                     success = compose_workbook(df, output_path, start_idx, end_idx)
 
                     if not success:
+                        logger.error(f"compose_workbook() returned False – generation failed for {uploaded.name}")
                         st.error("❌ Failed to generate CCA Profiler report. Please check your input data.")
+                        st.stop()
+
+                    # Defensive check: Verify file exists AND is not empty
+                    if not output_path.exists():
+                        logger.error(f"compose_workbook returned True but file does not exist: {output_path}")
+                        st.error("❌ File generation failed. Please check that your survey data has **all 25 required questions**.")
+                        st.stop()
+
+                    if output_path.stat().st_size == 0:
+                        logger.error(f"compose_workbook created empty file: {output_path}")
+                        st.error("❌ File generation failed. The output file is empty - please check your input data.")
                         st.stop()
 
                     # Read the generated file into memory
@@ -125,6 +162,7 @@ if uploaded:
             )
 
         except Exception as e:
+            logger.error(f"Unexpected error processing {uploaded.name}: {str(e)}", exc_info=True)
             st.error(f"❌ Error processing file: {str(e)}")
             st.exception(e)
 

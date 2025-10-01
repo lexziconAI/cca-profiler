@@ -3,6 +3,7 @@
 import argparse
 import logging
 import sys
+import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -84,28 +85,54 @@ def main():
         logger.info(f"Loading input file: {args.input}")
         df = load_input_file(args.input)
         logger.info(f"Loaded {len(df)} rows")
-    except Exception as e:
-        logger.error(f"Failed to load input file: {e}")
+    except PermissionError as e:
+        logger.error(f"PermissionError when loading {args.input}: {e}")
+        logger.error("File is locked. Please close the file in Excel and try again.")
         sys.exit(1)
-    
+    except pd.errors.EmptyDataError as e:
+        logger.error(f"EmptyDataError when loading {args.input}: {e}")
+        logger.error("The file appears to be empty or corrupted.")
+        sys.exit(1)
+    except zipfile.BadZipFile as e:
+        logger.error(f"BadZipFile when loading {args.input}: {e}")
+        logger.error("File is corrupted or still open in Excel. Please close and try again.")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Failed to load input file: {e}", exc_info=True)
+        sys.exit(1)
+
     # Detect survey columns
     start_idx, end_idx = detect_survey_columns(df)
     if start_idx is None:
         logger.error("Could not detect survey columns in input file")
         sys.exit(1)
-    
+
     logger.info(f"Detected survey columns from {start_idx} to {end_idx}")
-    
+
     # Compose workbook
     try:
         success = compose_workbook(df, args.output, start_idx, end_idx)
-        if success:
-            logger.info(f"Successfully created workbook: {args.output}")
-        else:
+
+        if not success:
+            logger.error(f"compose_workbook returned False for file: {args.input}")
             logger.error("Failed to create workbook")
             sys.exit(1)
+
+        # Defensive check: Verify file exists AND is not empty
+        if not args.output.exists():
+            logger.error(f"compose_workbook returned True but file missing: {args.output}")
+            logger.error("File generation failed. Please check that your survey data has all 25 required questions.")
+            sys.exit(1)
+
+        if args.output.stat().st_size == 0:
+            logger.error(f"compose_workbook created empty file: {args.output}")
+            logger.error("Generated file is empty. Please check your input data.")
+            sys.exit(1)
+
+        logger.info(f"Successfully created workbook: {args.output}")
+
     except Exception as e:
-        logger.error(f"Error creating workbook: {e}")
+        logger.error(f"Error creating workbook: {e}", exc_info=True)
         sys.exit(1)
 
 
