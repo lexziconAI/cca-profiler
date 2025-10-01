@@ -89,16 +89,20 @@ def insert_png(ws, row: int, col: int, png_path: str,
 
 
 def embed_icon(worksheet, row: int, col: int, icon_factory_func, temp_dir: Path,
-               width: int = 600, height: int = 600) -> bool:
+               width: int = 100, height: int = 100) -> bool:
     """
     Embed an icon from a factory function into Excel worksheet.
+
+    All icons are normalized to 100×100px base size regardless of source viewBox
+    for consistent visual weight. Default width/height changed to 100.
+
     Returns True if successful, False otherwise.
     """
     try:
         # Get SVG from factory
         svg_content = icon_factory_func()
 
-        # Convert to PNG
+        # Convert to PNG at standard size (default 100x100)
         png_bytes = svg_to_png(svg_content, width, height)
         if png_bytes is None:
             logger.error(f"Icon embedding failed: CairoSVG conversion failed")
@@ -113,7 +117,11 @@ def embed_icon(worksheet, row: int, col: int, icon_factory_func, temp_dir: Path,
 
         # Insert into worksheet with equal scaling and object_position=2
         worksheet.insert_image(row, col, str(temp_path), {
-            'x_scale': 0.20, 'y_scale': 0.20, 'object_position': 2
+            'x_scale': 0.20,
+            'y_scale': 0.20,
+            'object_position': 2,
+            'x_offset': 5,
+            'y_offset': 5
         })
         return True
     except Exception as e:
@@ -154,7 +162,11 @@ def embed_radar(worksheet, row: int, col: int, svg_content: str, temp_dir: Path,
 def safe_render_and_embed_icon(worksheet, row: int, col: int, icon_key: str,
                               temp_dir: Path, base_name: str, scale: float = 0.20):
     """
-    Safely render and embed icon with error handling.
+    Safely render and embed icon with error handling and size normalization.
+
+    All icons are normalized to 100×100px base size regardless of source viewBox,
+    then scaled by the scale parameter. This ensures consistent visual weight.
+
     Returns True if successful, False on any error.
     """
     try:
@@ -174,8 +186,12 @@ def safe_render_and_embed_icon(worksheet, row: int, col: int, icon_key: str,
         # Get SVG content
         svg_content = icon_factory()
 
-        # Convert to PNG with retry
-        png_bytes = svg_to_png(svg_content, width=600, height=600)
+        # CRITICAL: Standard output size regardless of source viewBox
+        STANDARD_SIZE = 100  # pixels
+
+        # Convert to PNG at standard size with retry
+        # This ensures all icons render at consistent 100x100px base size
+        png_bytes = svg_to_png(svg_content, width=STANDARD_SIZE, height=STANDARD_SIZE)
         if png_bytes is None:
             logger.error(f"Failed to convert SVG to PNG for icon '{icon_key}'")
             return False
@@ -187,12 +203,17 @@ def safe_render_and_embed_icon(worksheet, row: int, col: int, icon_key: str,
         temp_path = temp_dir / f"{base_name}_{row}_{col}.png"
         temp_path.write_bytes(png_bytes)
 
-        # Insert into worksheet
+        # Insert into worksheet with scaling applied after normalization
         worksheet.insert_image(row, col, str(temp_path), {
             'x_scale': scale,
             'y_scale': scale,
-            'object_position': 2
+            'object_position': 2,
+            'x_offset': 5,  # Center horizontally in cell
+            'y_offset': 5   # Center vertically in cell
         })
+
+        logger.debug(f"Embedded {icon_key} at ({row},{col}) - "
+                    f"normalized to {STANDARD_SIZE}px, scale={scale}")
         return True
 
     except Exception as e:
