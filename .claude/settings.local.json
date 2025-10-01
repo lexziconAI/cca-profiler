@@ -10,7 +10,9 @@
       "Read(//tmp/tmp3me1e0fi/**)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Read(//mnt/c/Users/regan/OneDrive/**)",
+      "Bash(git checkout:*)"
     ],
     "deny": [],
     "ask": []
