@@ -109,13 +109,19 @@ class TestCCIPSmoke(unittest.TestCase):
         # Check columns
         self.assertEqual(list(result_df.columns), REQUIRED_COLUMNS,
                         "Output should have required columns")
-        
-        # Check we have 3 rows
-        self.assertEqual(len(result_df), 3, "Should have 3 participant rows")
 
-        # Check score formatting (2 decimals with band name)
+        # Check we have 4 rows (1 dummy + 3 participants)
+        self.assertEqual(len(result_df), 4, "Should have 1 dummy row + 3 participant rows")
+
+        # Verify first row is dummy row
+        first_row = result_df.iloc[0]
+        self.assertEqual(first_row['Date'], "Dummy Placeholder", "First row should be dummy row")
+        self.assertEqual(first_row['ID'], "Dummy Placeholder", "First row should be dummy row")
+        self.assertEqual(first_row['Name'], "Dummy Placeholder", "First row should be dummy row")
+
+        # Check score formatting (2 decimals with band name) - skip dummy row
         # New format: "4.75 (Very High) - interpretation..."
-        for idx, row in result_df.iterrows():
+        for idx, row in result_df.iloc[1:].iterrows():  # Skip dummy row at index 0
             for col in ['DT_Score', 'TR_Score', 'CO_Score', 'CA_Score', 'EP_Score']:
                 score_str = str(row[col])
                 if score_str != 'N/A' and ' - ' in score_str:
@@ -127,9 +133,9 @@ class TestCCIPSmoke(unittest.TestCase):
                     # Verify band name is present
                     self.assertIn(' (', score_str, f"Score should contain band name: {score_str}")
 
-        # Check Summary column exists and has content
+        # Check Summary column exists and has content - skip dummy row
         self.assertIn('Summary', result_df.columns, "Summary column should exist")
-        for idx, row in result_df.iterrows():
+        for idx, row in result_df.iloc[1:].iterrows():  # Skip dummy row at index 0
             summary = str(row['Summary'])
             self.assertIsNotNone(summary, "Summary should not be None")
             self.assertNotEqual(summary, '', "Summary should not be empty")

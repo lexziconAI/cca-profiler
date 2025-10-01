@@ -879,7 +879,52 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
 
         # Enhanced schema validation
         validate_schema_compliance(result_df)
-        
+
+        # Create dummy row with placeholder values
+        dummy_row = {
+            # Metadata
+            "Date": "Dummy Placeholder",
+            "ID": "Dummy Placeholder",
+            "Name": "Dummy Placeholder",
+            "Email": "Dummy Placeholder",
+
+            # Scores
+            "DT_Score": "Dummy Placeholder",
+            "TR_Score": "Dummy Placeholder",
+            "CO_Score": "Dummy Placeholder",
+            "CA_Score": "Dummy Placeholder",
+            "EP_Score": "Dummy Placeholder",
+
+            # KS 1-3 (Icon will be LEVEL_TOOLS, Line will be LINE_ICON)
+            "KS1_Icon": "", "KS1_Line": "", "KS1_Title": "Dummy Placeholder", "KS1_Body": "Dummy Placeholder",
+            "KS2_Icon": "", "KS2_Line": "", "KS2_Title": "Dummy Placeholder", "KS2_Body": "Dummy Placeholder",
+            "KS3_Icon": "", "KS3_Line": "", "KS3_Title": "Dummy Placeholder", "KS3_Body": "Dummy Placeholder",
+
+            # DA 1-3 (Icon will be LEVEL_TOOLS, Line will be LINE_ICON)
+            "DA1_Icon": "", "DA1_Line": "", "DA1_Title": "Dummy Placeholder", "DA1_Body": "Dummy Placeholder",
+            "DA2_Icon": "", "DA2_Line": "", "DA2_Title": "Dummy Placeholder", "DA2_Body": "Dummy Placeholder",
+            "DA3_Icon": "", "DA3_Line": "", "DA3_Title": "Dummy Placeholder", "DA3_Body": "Dummy Placeholder",
+
+            # PR 1-3 (Icon will be LEVEL_TOOLS)
+            "PR1_Icon": "", "PR1_Title": "Dummy Placeholder", "PR1_Body": "Dummy Placeholder",
+            "PR2_Icon": "", "PR2_Title": "Dummy Placeholder", "PR2_Body": "Dummy Placeholder",
+            "PR3_Icon": "", "PR3_Title": "Dummy Placeholder", "PR3_Body": "Dummy Placeholder",
+
+            # Reflection questions
+            "RQ1": "Dummy Placeholder",
+            "RQ2": "Dummy Placeholder",
+            "RQ3": "Dummy Placeholder",
+            "RQ4": "Dummy Placeholder",
+
+            # Summary and Radar (Radar will be LEVEL_TOOLS icon)
+            "Summary": "Dummy Placeholder",
+            "Radar_Chart": ""
+        }
+
+        # Insert dummy row at position 0 (first data row)
+        result_df = pd.concat([pd.DataFrame([dummy_row]), result_df], ignore_index=True)
+        logger.info("Inserted dummy row at index 0 (Excel row 2, first data row)")
+
         # Write to Excel with images
         with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
             result_df.to_excel(writer, sheet_name='CCIP Results', index=False)
@@ -969,8 +1014,36 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
                         worksheet.write(row_idx, col_idx, cell_value, body_format)
             
             # Embed images for each row
+            # FIRST: Handle dummy row (Excel row 2, index 1 after header)
+            dummy_excel_row = 1
+            logger.info(f"Embedding icons for dummy row at Excel row {dummy_excel_row + 1}")
+
+            # KS icons: LEVEL_TOOLS + LINE_ICON for all 3
+            for i in range(1, 4):
+                safe_render_and_embed_icon(worksheet, dummy_excel_row, COL[f"KS{i}_Icon"],
+                                          "LEVEL_TOOLS", temp_dir, f"dummy_ks{i}_level", scale=1.0)
+                safe_render_and_embed_icon(worksheet, dummy_excel_row, COL[f"KS{i}_Line"],
+                                          "LINE_ICON", temp_dir, f"dummy_ks{i}_line", scale=1.0)
+
+            # DA icons: LEVEL_TOOLS + LINE_ICON for all 3
+            for i in range(1, 4):
+                safe_render_and_embed_icon(worksheet, dummy_excel_row, COL[f"DA{i}_Icon"],
+                                          "LEVEL_TOOLS", temp_dir, f"dummy_da{i}_level", scale=1.0)
+                safe_render_and_embed_icon(worksheet, dummy_excel_row, COL[f"DA{i}_Line"],
+                                          "LINE_ICON", temp_dir, f"dummy_da{i}_line", scale=1.0)
+
+            # PR icons: LEVEL_TOOLS for all 3
+            for i in range(1, 4):
+                safe_render_and_embed_icon(worksheet, dummy_excel_row, COL[f"PR{i}_Icon"],
+                                          "LEVEL_TOOLS", temp_dir, f"dummy_pr{i}", scale=1.0)
+
+            # Radar: LEVEL_TOOLS icon
+            safe_render_and_embed_icon(worksheet, dummy_excel_row, COL["Radar_Chart"],
+                                      "LEVEL_TOOLS", temp_dir, "dummy_radar", scale=1.0)
+
+            # SECOND: Handle actual participant rows (Excel rows 3+, indices 2+ after header)
             for row_idx, row_data in enumerate(output_data):
-                excel_row = row_idx + 1  # Skip header
+                excel_row = row_idx + 2  # +1 for header, +1 for dummy row = +2 total
 
                 # Reprocess this row to get KS/DA/PR items with icon keys
                 row = survey_df.iloc[row_idx]
