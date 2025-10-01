@@ -707,6 +707,80 @@ def format_body_lines(text: str) -> str:
     return '\n'.join(lines[:3])
 
 
+def create_placeholder_participant_row(name: str, email: str, date: str, participant_id: any) -> dict:
+    """
+    Create a placeholder row for participants with no survey data.
+    Still includes their name/email but with empty/default values for scores and recommendations.
+    """
+    from ccip.ccip_textbank import get_default_ks_items, get_default_da_items, get_default_pr_items
+    
+    # Get default items (placeholders)
+    default_ks = get_default_ks_items()
+    default_da = get_default_da_items()  
+    default_pr = get_default_pr_items()
+    
+    row = {
+        'Date': date or '',
+        'ID': participant_id or '',
+        'Name': name,
+        'Email': email,
+        
+        # Zero scores for all dimensions
+        'DT_Score': 0.0,
+        'TR_Score': 0.0, 
+        'CO_Score': 0.0,
+        'CA_Score': 0.0,
+        'EP_Score': 0.0,
+        
+        # Placeholder KS items
+        'KS1_Icon': 'LEVEL_SEEDLING',
+        'KS1_Title': default_ks[0][1],
+        'KS1_Body': default_ks[0][2],
+        'KS2_Icon': 'LEVEL_SEEDLING', 
+        'KS2_Title': default_ks[1][1],
+        'KS2_Body': default_ks[1][2],
+        'KS3_Icon': 'LEVEL_SEEDLING',
+        'KS3_Title': default_ks[2][1], 
+        'KS3_Body': default_ks[2][2],
+        
+        # Placeholder DA items
+        'DA1_Icon': 'LEVEL_SEEDLING',
+        'DA1_Title': default_da[0][1],
+        'DA1_Body': default_da[0][2],
+        'DA2_Icon': 'LEVEL_SEEDLING',
+        'DA2_Title': default_da[1][1], 
+        'DA2_Body': default_da[1][2],
+        'DA3_Icon': 'LEVEL_SEEDLING',
+        'DA3_Title': default_da[2][1],
+        'DA3_Body': default_da[2][2],
+        
+        # Placeholder PR items
+        'PR1_Icon': 'PR_DT',
+        'PR1_Title': default_pr[0][1],
+        'PR1_Body': default_pr[0][2],
+        'PR2_Icon': 'PR_TR', 
+        'PR2_Title': default_pr[1][1],
+        'PR2_Body': default_pr[1][2],
+        'PR3_Icon': 'PR_CO',
+        'PR3_Title': default_pr[2][1],
+        'PR3_Body': default_pr[2][2],
+        
+        # Empty reflection questions
+        'RQ1': '',
+        'RQ2': '',
+        'RQ3': '',
+        'RQ4': '',
+        
+        # Default summary for no data
+        'Summary': 'No survey data available for this participant. Please ensure they complete the CCIP assessment to generate personalised insights and recommendations.',
+        
+        # No radar chart
+        'Radar_PNG': ''
+    }
+    
+    return row
+
+
 def validate_schema_compliance(df: pd.DataFrame) -> None:
     """
     Comprehensive schema validation with detailed logging.
@@ -763,21 +837,12 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
     enhanced_df = survey_df.copy()
     enhanced_df['Date'] = date_series
 
-    # Detect name and email columns flexibly
-    from .ccip_intake import detect_name_column, detect_email_column, is_valid_email
+    # Use robust name and email detection that handles swapping
+    from .ccip_intake import detect_name_and_email_robust
 
-    name_col = detect_name_column(survey_df)
-    email_col = detect_email_column(survey_df)
-
-    if name_col:
-        logger.info(f"Using name column: '{name_col}'")
-    else:
-        logger.warning("No name column found - will use email parsing or 'Anonymous' fallback")
-
-    if email_col:
-        logger.info(f"Using email column: '{email_col}'")
-    else:
-        logger.warning("No email column found - will use 'Anonymous' fallback")
+    detected_name_col, detected_email_col, name_col, email_col = detect_name_and_email_robust(survey_df)
+    
+    logger.info(f"Robust detection complete: name_col='{name_col}', email_col='{email_col}'")
 
     # Create output dataframe with required columns
     output_data = []
@@ -789,21 +854,24 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
     try:
         # Process each survey row
         for idx, row in enhanced_df.iterrows():
-            # Extract name/email from detected columns
-            name_value = row.get(name_col) if name_col else None
-            email_value = row.get(email_col) if email_col else None
-
-            # Skip rows without valid email for identification
-            if not is_valid_email(email_value):
-                logger.debug(f"Skipping row {idx}: invalid or missing email")
-                continue
-
-            # Process survey responses with detected column names
+            logger.info(f"Processing row {idx}")
+            
+            # Process survey responses - robust extraction will handle name/email
             processed = process_survey_row(row, start_idx, end_idx,
                                           name_col=name_col,
                                           email_col=email_col)
+            
+            logger.info(f"Row {idx}: Name='{processed['Name']}', Email='{processed['Email']}'") 
             scores_raw_1_5 = processed['scores']
-            if not any(v is not None for v in scores_raw_1_5.values()):
+            
+            # Check if participant provided any survey responses
+            has_survey_data = any(v is not None for v in scores_raw_1_5.values())
+            
+            if not has_survey_data:
+                # Create placeholder row for participant with no survey data
+                logger.warning(f"Row {idx}: No survey responses found, creating placeholder entry")
+                out_row = create_placeholder_participant_row(processed['Name'], processed['Email'], processed['Date'], processed['ID'])
+                output_rows.append(out_row)
                 continue
             scores = _scale_and_clamp_scores_0_5(scores_raw_1_5)
             # guard
@@ -825,7 +893,7 @@ def compose_workbook(survey_df: pd.DataFrame, output_path: Path,
             out_row["ID"] = processed['ID']
             out_row["Email"] = processed['Email']
             out_row["Date"] = row['Date']  # Use derived date directly
-            out_row["Name"] = extract_display_name(name_value, email_value)
+            out_row["Name"] = processed['Name']  # Already processed by robust extraction
             # NOTE: Organisation, Level, Level Icon, Primary Focus Area not in locked schema
 
             # Score fields

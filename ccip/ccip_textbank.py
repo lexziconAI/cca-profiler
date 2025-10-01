@@ -98,5 +98,32 @@ def validate_textbank():
 
     return True
 
+
+def get_default_ks_items():
+    """Get default Key Strengths items for participants with no survey data."""
+    return [
+        ("DT", "Data Not Available - 0.0", "No survey responses available. Please complete the CCIP assessment to receive\npersonalised Key Strengths insights based on your responses.\nYour profile will be updated once assessment data is provided."),
+        ("TR", "Data Not Available - 0.0", "No survey responses available. Please complete the CCIP assessment to receive\npersonalised Key Strengths insights based on your responses.\nYour profile will be updated once assessment data is provided."),
+        ("CO", "Data Not Available - 0.0", "No survey responses available. Please complete the CCIP assessment to receive\npersonalised Key Strengths insights based on your responses.\nYour profile will be updated once assessment data is provided.")
+    ]
+
+
+def get_default_da_items():
+    """Get default Development Areas items for participants with no survey data.""" 
+    return [
+        ("DT", "Data Not Available - 0.0", "No survey responses available. Please complete the CCIP assessment to receive\npersonalised Development Areas insights based on your responses.\nYour profile will be updated once assessment data is provided."),
+        ("TR", "Data Not Available - 0.0", "No survey responses available. Please complete the CCIP assessment to receive\npersonalised Development Areas insights based on your responses.\nYour profile will be updated once assessment data is provided."),
+        ("CO", "Data Not Available - 0.0", "No survey responses available. Please complete the CCIP assessment to receive\npersonalised Development Areas insights based on your responses.\nYour profile will be updated once assessment data is provided.")
+    ]
+
+
+def get_default_pr_items():
+    """Get default Practical Recommendations items for participants with no survey data."""
+    return [  
+        ("DT", "Complete CCIP Assessment", "Please complete the Cross-Cultural Intelligence Profile assessment to receive\npersonalised practical recommendations for developing your directness and transparency.\nYour tailored action plan will be generated based on your survey responses."),
+        ("TR", "Complete CCIP Assessment", "Please complete the Cross-Cultural Intelligence Profile assessment to receive\npersonalised practical recommendations for developing your task-relationship balance.\nYour tailored action plan will be generated based on your survey responses."),
+        ("CO", "Complete CCIP Assessment", "Please complete the Cross-Cultural Intelligence Profile assessment to receive\npersonalised practical recommendations for developing your conflict orientation skills.\nYour tailored action plan will be generated based on your survey responses.")
+    ]
+
 # Run validation on import
 validate_textbank()

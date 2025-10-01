@@ -209,98 +209,196 @@ def detect_survey_columns(df: pd.DataFrame) -> Tuple[Optional[int], Optional[int
     return None, None
 
 
-def detect_name_column(df: pd.DataFrame) -> Optional[str]:
-    """
-    Detect name column by searching headers with flexible matching.
+def _looks_like_email(value) -> bool:
+    """Check if a value looks like an email address."""
+    if pd.isna(value):
+        return False
+    value_str = str(value).strip()
+    import re
+    return bool(re.match(r'.+@.+\..+', value_str))
 
-    Priority:
-    1. Column header containing "please type your name" (partial, case-insensitive)
-    2. Column header exactly matching "name" (case-insensitive)
 
-    Returns: Column name (str) or None if not found
+def _looks_like_name(value) -> bool:
+    """Check if a value looks like a human name (not an email)."""
+    if pd.isna(value):
+        return False
+    value_str = str(value).strip()
+    if not value_str or value_str.lower() in ['nan', 'none', 'n/a', '']:
+        return False
+    return not _looks_like_email(value_str)
+
+
+def _email_to_name(email_str: str) -> str:
+    """Convert email address to human-readable name."""
+    if '@' not in email_str:
+        return email_str
+    
+    # Take part before @
+    local_part = email_str.split('@')[0]
+    
+    # Replace common separators with spaces
+    name = local_part.replace('.', ' ').replace('_', ' ').replace('-', ' ')
+    
+    # Title case
+    return name.title()
+
+
+def detect_name_and_email_robust(df: pd.DataFrame) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """
-    # Priority 1: Survey field with partial match
+    Robustly detect name and email values for each row, handling swapped columns.
+    
+    Returns: (name_column, email_column, resolved_name_column, resolved_email_column)
+    Where the first two are the detected column headers, and the last two are the
+    actual columns to use after handling swaps.
+    """
+    # Find potential columns
+    survey_name_col = None
+    survey_email_col = None
+    simple_name_col = None
+    simple_email_col = None
+    
     for col in df.columns:
         col_str = str(col).lower().strip()
         if "please type your name" in col_str:
-            logger.info(f"Name column detected: '{col}' (survey field)")
-            return col
+            survey_name_col = col
+        elif "please type your email" in col_str:
+            survey_email_col = col
+        elif col_str == "name":
+            simple_name_col = col
+        elif col_str == "email":
+            simple_email_col = col
+    
+    logger.info(f"Column detection: survey_name='{survey_name_col}', survey_email='{survey_email_col}', simple_name='{simple_name_col}', simple_email='{simple_email_col}'")
+    
+    # Check if survey columns have data, fall back to simple columns
+    name_col = survey_name_col
+    email_col = survey_email_col
+    
+    if name_col and (df[name_col].isna().all() or df[name_col].astype(str).str.strip().eq('').all()):
+        logger.warning(f"Survey name column '{name_col}' is empty, falling back to simple column")
+        name_col = simple_name_col
+        
+    if email_col and (df[email_col].isna().all() or df[email_col].astype(str).str.strip().eq('').all()):
+        logger.warning(f"Survey email column '{email_col}' is empty, falling back to simple column")
+        email_col = simple_email_col
+    
+    # If we don't have survey columns, use simple columns
+    if not name_col:
+        name_col = simple_name_col
+    if not email_col:
+        email_col = simple_email_col
+    
+    # Now check for swapping by examining actual data
+    resolved_name_col = name_col
+    resolved_email_col = email_col
+    
+    if name_col and email_col:
+        # Sample a few non-null values to detect swapping
+        name_sample = df[name_col].dropna().head(3)
+        email_sample = df[email_col].dropna().head(3)
+        
+        name_looks_like_email = any(_looks_like_email(val) for val in name_sample)
+        email_looks_like_name = any(_looks_like_name(val) for val in email_sample)
+        
+        if name_looks_like_email and email_looks_like_name:
+            logger.warning(f"Detected column swap: '{name_col}' contains emails, '{email_col}' contains names - swapping")
+            resolved_name_col = email_col
+            resolved_email_col = name_col
+    
+    logger.info(f"Final column resolution: name='{resolved_name_col}', email='{resolved_email_col}'")
+    
+    return name_col, email_col, resolved_name_col, resolved_email_col
 
-    # Priority 2: Standard "Name" column
-    for col in df.columns:
-        col_str = str(col).lower().strip()
-        if col_str == "name":
-            logger.info(f"Name column detected: '{col}' (metadata)")
-            return col
 
-    logger.warning("No name column detected")
-    return None
+def extract_name_and_email_robust(row: pd.Series, name_col: Optional[str], email_col: Optional[str]) -> tuple[str, str]:
+    """
+    Extract robust name and email values from a row, with comprehensive fallbacks.
+    
+    Implements the exact specification:
+    - NAME: Survey field -> Name column -> Extract from email -> "Anonymous"
+    - EMAIL: Survey field -> Email column -> Swap detection -> Leave blank if none
+    
+    Returns: (name, email) - name is guaranteed non-empty, email may be empty
+    """
+    name_value = None
+    email_value = None
+    
+    # Extract raw values
+    if name_col:
+        raw_name = row.get(name_col)
+        if not pd.isna(raw_name) and str(raw_name).strip():
+            name_value = str(raw_name).strip()
+    
+    if email_col:
+        raw_email = row.get(email_col)
+        if not pd.isna(raw_email) and str(raw_email).strip():
+            email_value = str(raw_email).strip()
+    
+    # NAME DETECTION per specification
+    final_name = "Anonymous"  # Default per spec
+    
+    # 1. First check if name_value looks like a name
+    if name_value and _looks_like_name(name_value):
+        final_name = name_value
+    # 2. If Email column has name (single column scenario or swap), use it
+    elif email_value and _looks_like_name(email_value):
+        final_name = email_value
+        logger.warning(f"Using name '{email_value}' from email column")
+    # 3. Extract from any available email
+    elif name_value and _looks_like_email(name_value):
+        final_name = _email_to_name(name_value)
+        logger.warning(f"Extracted name '{final_name}' from email in name column")
+    elif email_value and _looks_like_email(email_value):
+        final_name = _email_to_name(email_value)
+        logger.warning(f"No name found, extracted '{final_name}' from email '{email_value}'")
+    # 4. If still no name, final_name remains "Anonymous"
+    
+    # EMAIL DETECTION per specification  
+    final_email = ""  # Default: blank if no email found (per spec)
+    
+    # 1. First check if email_value looks like an email
+    if email_value and _looks_like_email(email_value):
+        final_email = email_value
+    # 2. If Name column has email (single column scenario or swap), use it
+    elif name_value and _looks_like_email(name_value):
+        final_email = name_value
+        logger.warning(f"Using email '{name_value}' from name column")
+    # 3. If still no email, final_email remains blank (per spec)
+    
+    return final_name, final_email
+
+
+def detect_name_column(df: pd.DataFrame) -> Optional[str]:
+    """Legacy function for backward compatibility - uses robust detection."""
+    _, _, resolved_name_col, _ = detect_name_and_email_robust(df)
+    return resolved_name_col
 
 
 def detect_email_column(df: pd.DataFrame) -> Optional[str]:
-    """
-    Detect email column by searching headers with flexible matching.
-
-    Priority:
-    1. Column header containing "please type your email" (partial, case-insensitive)
-    2. Column header exactly matching "email" (case-insensitive)
-
-    Returns: Column name (str) or None if not found
-    """
-    # Priority 1: Survey field with partial match
-    for col in df.columns:
-        col_str = str(col).lower().strip()
-        if "please type your email" in col_str:
-            logger.info(f"Email column detected: '{col}' (survey field)")
-            return col
-
-    # Priority 2: Standard "Email" column
-    for col in df.columns:
-        col_str = str(col).lower().strip()
-        if col_str == "email":
-            logger.info(f"Email column detected: '{col}' (metadata)")
-            return col
-
-    logger.warning("No email column detected")
-    return None
+    """Legacy function for backward compatibility - uses robust detection."""
+    _, _, _, resolved_email_col = detect_name_and_email_robust(df)
+    return resolved_email_col
 
 
 def is_valid_email(email_value) -> bool:
     """
-    Validate email value for participant identification.
+    Check if email value looks like an email for content detection only.
+    
+    This function is now ONLY used for detecting if content looks like an email.
+    It is NOT used as a gatekeeper to exclude rows from processing.
+    All participant rows are processed regardless of email validity.
 
-    Accepts:
-    - Valid email addresses (contains @ with text before and after)
-    - "anonymous" (Microsoft auto-fill when not logged in)
-
-    Rejects:
-    - None/NaN/blank values
-    - Invalid strings: "nan", "none", "n/a"
-    - Malformed emails: "@example.com", "user@", etc.
-
-    Returns: True if usable for identification, False otherwise
+    Returns: True if looks like email format (contains @), False otherwise
     """
     if pd.isna(email_value):
         return False
 
-    email_str = str(email_value).strip().lower()
-
-    if not email_str or email_str in ['', 'nan', 'none', 'n/a']:
+    email_str = str(email_value).strip()
+    if not email_str:
         return False
 
-    # "anonymous" is valid (Microsoft behavior when not logged in)
-    if email_str == 'anonymous':
-        return True
-
-    # Otherwise must contain @ with text before and after
-    if '@' not in email_str:
-        return False
-
-    parts = email_str.split('@')
-    if len(parts) != 2 or not parts[0] or not parts[1]:
-        return False
-
-    return True
+    # Simple check - does it look like an email?
+    return '@' in email_str and '.' in email_str.split('@')[-1]
 
 
 def parse_likert_response(value) -> Optional[int]:
@@ -542,10 +640,13 @@ def process_survey_row(row: pd.Series, start_idx: int, end_idx: int,
     Returns:
         Dict with ID, Email, Name, Date, responses, scores
     """
+    # Use robust name/email extraction
+    final_name, final_email = extract_name_and_email_robust(row, name_col, email_col)
+    
     result = {
         'ID': row.get('ID'),
-        'Email': row.get(email_col) if email_col else None,
-        'Name': row.get(name_col) if name_col else None,
+        'Email': final_email,
+        'Name': final_name,
         'Date': parse_date(row.get('Date')),
         'responses': [],
         'scores': {}
