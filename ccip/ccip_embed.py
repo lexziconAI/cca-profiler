@@ -187,11 +187,15 @@ def safe_render_and_embed_icon(worksheet, row: int, col: int, icon_key: str,
         svg_content = icon_factory()
 
         # CRITICAL: Standard output size regardless of source viewBox
-        STANDARD_SIZE = 100  # pixels
-
-        # Convert to PNG at standard size with retry
-        # This ensures all icons render at consistent 100x100px base size
-        png_bytes = svg_to_png(svg_content, width=STANDARD_SIZE, height=STANDARD_SIZE)
+        # Exception: LINE_ICON preserves its original aspect ratio (3783x21)
+        if icon_key == 'LINE_ICON':
+            # Line icon: preserve horizontal aspect ratio, use larger width
+            png_bytes = svg_to_png(svg_content, width=600, height=4)
+        else:
+            STANDARD_SIZE = 100  # pixels
+            # Convert to PNG at standard size with retry
+            # This ensures all icons render at consistent 100x100px base size
+            png_bytes = svg_to_png(svg_content, width=STANDARD_SIZE, height=STANDARD_SIZE)
         if png_bytes is None:
             logger.error(f"Failed to convert SVG to PNG for icon '{icon_key}'")
             return False
@@ -212,8 +216,12 @@ def safe_render_and_embed_icon(worksheet, row: int, col: int, icon_key: str,
             'y_offset': 5   # Center vertically in cell
         })
 
-        logger.debug(f"Embedded {icon_key} at ({row},{col}) - "
-                    f"normalized to {STANDARD_SIZE}px, scale={scale}")
+        if icon_key == 'LINE_ICON':
+            logger.debug(f"Embedded {icon_key} at ({row},{col}) - "
+                        f"600x4px (preserved aspect ratio), scale={scale}")
+        else:
+            logger.debug(f"Embedded {icon_key} at ({row},{col}) - "
+                        f"normalized to {STANDARD_SIZE}px, scale={scale}")
         return True
 
     except Exception as e:
